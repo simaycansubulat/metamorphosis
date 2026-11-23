@@ -143,6 +143,21 @@
       return changed;
     }
 
+    /** The 3D construction changed: the whole height map is replaced at once.
+     *  `at` is where it happened ({ i, j, delta, height }), or null. */
+    setModel(H, count, at = null) {
+      if (this.state !== 'session' || !this.model) return;
+      const before = this.will.result.raw;
+      const c = at ? at.j * RUIN.will.COLS + at.i : -1;
+      const err = c >= 0 ? this.will.result.lack[c] + this.will.result.excess[c] : 0;
+      this.model.set(H, count);
+      if (!at) return;
+      const w = RUIN.will.cellToWorld(at.i, at.j, this.organism.aspect);
+      this.emit('piece', { i: at.i, j: at.j, delta: at.delta, height: at.height, pieces: count, x: w.x, y: w.y, xn: w.x / this.organism.aspect });
+      this.pending = this.pending.filter((p) => !(p.i === at.i && p.j === at.j));
+      this.pending.push({ i: at.i, j: at.j, before, err, t: 0.45 + Math.random() * 0.4 });
+    }
+
     clearModel() {
       if (!this.model) return;
       const before = this.will.result.raw;
@@ -239,7 +254,7 @@
           urgency: +this.will.urgency.toFixed(2),
           accord: this.will.accord,
           focus: this.will.focus(3),
-          pieces: this.model.pieces,
+          pieces: this.model.count ?? this.model.pieces,
         } : null,
         loci,
         links,

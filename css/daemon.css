@@ -105,13 +105,14 @@ body.is-bare .instrument { opacity: 0; }
 .mark button:hover, .mark button:focus-visible { color: var(--ink); outline: none; }
 .mark button[aria-pressed="true"] { color: var(--ink); }
 
-/* ---- construction site (secondary, top-down) ------------------------------ */
+/* ---- construction: the pieces, built on the surface in 3D ------------------ */
 .site {
   position: fixed;
   left: 20px; bottom: 18px;
   display: flex; flex-direction: column; gap: 6px;
+  max-width: 300px;
   padding: 8px;
-  background: rgba(236, 227, 210, 0.5);
+  background: rgba(236, 227, 210, 0.8);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
   font-size: 10px;
@@ -125,39 +126,26 @@ body.is-session.is-idle .site { opacity: 0.35; }
 body.is-session .site:hover, body.is-session .site:focus-within { opacity: 1; }
 body.is-bare .site { opacity: 0; pointer-events: none; }
 
-.site__grid {
-  display: grid;
-  grid-template-columns: repeat(var(--cols), 22px);
-  grid-template-rows: repeat(var(--rows), 22px);
-  gap: 2px;
-}
-.site__cell {
-  --h: 0;
-  position: relative;
-  appearance: none;
-  margin: 0; padding: 0;
-  border: 1px solid var(--mark-faint);
-  background: transparent;
-  cursor: crosshair;
-  font: inherit;
-  color: var(--paper);
-}
-.site__cell:hover, .site__cell:focus-visible { border-color: var(--ink); outline: none; }
-.site__cell .stack {
-  position: absolute;
-  /* seen from above: a piece fills the cell; taller stacks read darker */
-  inset: 3px;
-  background: var(--ink);
-  opacity: calc(0.28 + var(--h) * 0.72);
-  transform: scale(calc(var(--h) > 0 ? 1 : 0));
+.site__shapes { display: flex; gap: 4px; }
+.site__shape {
+  appearance: none; margin: 0; padding: 4px;
+  width: 42px; height: 38px;
   display: grid; place-items: center;
-  font-size: 9px; letter-spacing: 0;
-  transition: opacity 0.25s ease;
+  background: transparent;
+  border: 1px solid var(--mark-faint);
+  cursor: pointer;
 }
-.site__cell[data-h="0"] .stack { display: none; }
-.site__cell.is-touched .stack { animation: settle 0.35s ease-out; }
-@keyframes settle { from { transform: scale(0.6); } to { transform: scale(1); } }
-.site.is-lifting .site__cell { cursor: not-allowed; border-style: dashed; }
+.site__shape svg { display: block; width: 32px; height: 28px; overflow: visible; }
+.site__shape polygon { stroke: var(--ink); stroke-width: 0.7; stroke-linejoin: round; }
+.site__shape .t { fill: rgba(236, 227, 210, 0.95); }
+.site__shape .f { fill: rgba(196, 178, 150, 0.9); }
+.site__shape .r { fill: rgba(160, 140, 112, 0.9); }
+.site__shape:hover, .site__shape:focus-visible { border-color: var(--ink); outline: none; }
+.site__shape[aria-pressed="true"] { border-color: var(--ink); background: rgba(236, 227, 210, 0.7); }
+.site.is-lifting .site__shapes { opacity: 0.35; }
+body.is-session #surface { cursor: crosshair; }
+body.is-session.is-lifting #surface { cursor: not-allowed; }
+.site__hint { margin: 0; color: var(--mark-faint); letter-spacing: 0.08em; line-height: 1.6; font-size: 9px; }
 
 .site__bar { display: flex; align-items: center; gap: 10px; color: var(--mark-faint); }
 .site__count { flex: 1; font-variant-numeric: tabular-nums; }
@@ -204,7 +192,9 @@ body.is-bare .site { opacity: 0; pointer-events: none; }
 @media (max-width: 520px) {
   .mark--state { top: 16px; left: 16px; gap: 10px; }
   .site { left: 10px; bottom: 52px; padding: 6px; }
-  .site__grid { grid-template-columns: repeat(var(--cols), 18px); grid-template-rows: repeat(var(--rows), 18px); }
+  .site__shape { width: 34px; height: 32px; }
+  .site__shape svg { width: 26px; height: 24px; }
+  .site__hint { display: none; }
   #volume { width: 44px; }
   .mark--controls { bottom: 12px; right: 12px; gap: 8px; }
 }

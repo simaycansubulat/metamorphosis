@@ -263,7 +263,13 @@
       if (this.h[c] !== before) this.version++;
       return this.h[c] - before;
     }
-    clear() { this.h.fill(0); this.version++; }
+    clear() { this.h.fill(0); this.count = 0; this.version++; }
+    /** Replace the whole height map at once (from the 3D construction). */
+    set(H, count) {
+      for (let c = 0; c < N; c++) this.h[c] = clamp(H[c] || 0, 0, MAXH);
+      this.count = count;
+      this.version++;
+    }
     get pieces() { let s = 0; for (const v of this.h) s += v; return s; }
   }
 

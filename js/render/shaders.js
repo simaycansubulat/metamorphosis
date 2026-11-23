@@ -23,26 +23,7 @@
 
   const INDEX_W = 2048;
 
-  const VERT = `#version 300 es
-  out vec2 v_uv;
-  void main() {
-    vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);
-    v_uv = p * 0.5 + 0.5;
-    gl_Position = vec4(p, 0.0, 1.0);
-  }`;
-
-  const COMMON = `#version 300 es
-  precision highp float;
-  precision highp int;
-  precision highp sampler2D;
-
-  uniform sampler2D u_blobs;  // MAX x 3 : (x,y,r,type) (alpha,tint,act,seed) (x1,y1,r1,light)
-  uniform sampler2D u_tiles;  // GX x GY : (start, count)
-  uniform sampler2D u_index;  // INDEX_W x H : blob index
-  uniform vec2  u_grid;
-  uniform float u_aspect;
-  uniform float u_time;
-
+  const NOISE = `
   vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
   vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
   vec3 permute(vec3 x) { return mod289(((x * 34.0) + 1.0) * x); }
@@ -83,6 +64,29 @@
     return fract((p3.xx + p3.yz) * p3.zy);
   }
 
+  `;
+
+  const VERT = `#version 300 es
+  out vec2 v_uv;
+  void main() {
+    vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);
+    v_uv = p * 0.5 + 0.5;
+    gl_Position = vec4(p, 0.0, 1.0);
+  }`;
+
+  const COMMON = `#version 300 es
+  precision highp float;
+  precision highp int;
+  precision highp sampler2D;
+
+  uniform sampler2D u_blobs;  // MAX x 3 : (x,y,r,type) (alpha,tint,act,seed) (x1,y1,r1,light)
+  uniform sampler2D u_tiles;  // GX x GY : (start, count)
+  uniform sampler2D u_index;  // INDEX_W x H : blob index
+  uniform vec2  u_grid;
+  uniform float u_aspect;
+  uniform float u_time;
+
+  ${NOISE}
   vec2 warp(vec2 p, float t) {
     vec2 w = vec2(fbm(p * 2.2 + vec2(0.0, t * 0.012)), fbm(p * 2.2 + vec2(5.2, 1.3 - t * 0.01)));
     return p + 0.02 * w;
@@ -326,7 +330,10 @@
     col *= 0.97 + 0.06 * hash12(floor(gl_FragCoord.xy));
     vec2 vc = v_uv - 0.5;
     col *= 1.0 - (0.28 - 0.08 * u_harmony) * pow(dot(vc, vc) * 1.8, 1.4);
-    outColor = vec4(col, 1.0);
+    // alpha carries the RELIEF of the matter: the 3D board raises it slightly
+    float relief = inkA * 0.75 + sootA * 0.25 + clamp(washA, 0.0, 1.0) * 0.15
+                 + membrane * tissue * 0.3 + clamp(f.rim, 0.0, 1.0) * 0.25;
+    outColor = vec4(col, clamp(relief, 0.0, 1.0));
   }`;
 
   const MEMORY = COMMON + `
@@ -347,5 +354,5 @@
     outColor = vec4(clamp(nv, 0.0, 1.0), 0.0, 0.0, 1.0);
   }`;
 
-  RUIN.shaders = { VERT, MAIN, MEMORY, INDEX_W };
+  RUIN.shaders = { VERT, MAIN, MEMORY, INDEX_W, NOISE };
 })((window.RUIN = window.RUIN || {}));

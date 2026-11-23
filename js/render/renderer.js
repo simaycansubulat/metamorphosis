@@ -2,7 +2,8 @@
  * renderer.js — WebGL2 painter.
  * Receives plain numbers from the organism (via `daemon.organism.collect`),
  * bins them into screen tiles so each pixel only evaluates nearby matter,
- * and paints the field. Resolution adapts to keep motion fluid.
+ * and paints the field into a SURFACE texture. The 3D scene (scene.js) lays
+ * that surface on a board and builds on it. Resolution adapts to keep motion fluid.
  * ------------------------------------------------------------------------- */
 (function (RUIN) {
   'use strict';
@@ -13,11 +14,14 @@
   const INDEX_H = 64;
   const MEMORY_DIV = 4;
   const lerp = (a, b, t) => a + (b - a) * t;
+  // the board's proportions: square construction cells (8 × 5) plus the will's margin
+  const M = 0.06;
+  const BOARD_ASPECT = 2 * M + (8 * (1 - 2 * M)) / 5;
 
   class Renderer {
     constructor(canvas) {
       this.canvas = canvas;
-      const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+      const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, depth: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
       if (!gl) throw new Error('WebGL2 is not available');
       this.gl = gl;
 
@@ -43,7 +47,45 @@
       this.texIndex = this.floatTex(INDEX_W, INDEX_H, gl.R32F, gl.RED);
       this.texTiles = null;
       this.mem = null;
+      this.surface = null;
+      this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+      this.aspect = BOARD_ASPECT;
       this.resize();
+      this.scene = new RUIN.Scene(this);
+    }
+
+    /** The field is painted into this texture (with mipmaps: seen at a slant). */
+    surfaceTarget(w, h) {
+      const gl = this.gl;
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      if (this.aniso) gl.texParameterf(gl.TEXTURE_2D, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(this.aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+      const levels = Math.floor(Math.log2(Math.max(w, h))) + 1;
+      gl.texStorage2D(gl.TEXTURE_2D, levels, gl.RGBA8, w, h);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      gl.clearColor(0.8, 0.77, 0.7, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return { tex, fb, w, h };
+    }
+
+    sizeSurface() {
+      const gl = this.gl;
+      const w = Math.max(256, Math.min(2048, Math.round(Math.max(this.cssW, this.cssH * 1.5) * this.quality * 0.95 / 64) * 64));
+      const h = Math.round(w / this.aspect);
+      if (this.surface && Math.abs(this.surface.w - w) < 128) return;
+      if (this.surface) { gl.deleteTexture(this.surface.tex); gl.deleteFramebuffer(this.surface.fb); }
+      this.surface = this.surfaceTarget(w, h);
+      const mw = Math.max(8, Math.floor(w / MEMORY_DIV)), mh = Math.max(8, Math.floor(h / MEMORY_DIV));
+      if (!this.mem || this.mem[0].w !== mw || this.mem[0].h !== mh) {
+        this.mem = [this.memoryTarget(mw, mh), this.memoryTarget(mw, mh)];
+      }
     }
 
     /* ---- setup helpers ------------------------------------------------- */
@@ -106,7 +148,6 @@
       const cw = this.canvas.clientWidth || window.innerWidth;
       const ch = this.canvas.clientHeight || window.innerHeight;
       this.cssW = cw; this.cssH = ch;
-      this.aspect = cw / ch;
       this.canvas.width = Math.max(2, Math.floor(cw * this.quality));
       this.canvas.height = Math.max(2, Math.floor(ch * this.quality));
 
@@ -117,11 +158,8 @@
       if (this.texTiles) gl.deleteTexture(this.texTiles);
       this.texTiles = this.floatTex(this.gx, this.gy, gl.RGBA32F, gl.RGBA);
 
-      // memory survives resizes of the same order; rebuild only when needed
-      const mw = Math.max(8, Math.floor(cw / MEMORY_DIV)), mh = Math.max(8, Math.floor(ch / MEMORY_DIV));
-      if (!this.mem || this.mem[0].w !== mw || this.mem[0].h !== mh) {
-        this.mem = [this.memoryTarget(mw, mh), this.memoryTarget(mw, mh)];
-      }
+      // the surface (and its memory) survive resizes of the same order
+      this.sizeSurface();
     }
 
     setQuality(q) {
@@ -130,6 +168,7 @@
       this.quality = q;
       this.canvas.width = Math.max(2, Math.floor(this.cssW * q));
       this.canvas.height = Math.max(2, Math.floor(this.cssH * q));
+      this.sizeSurface();
     }
 
     /** Adaptive resolution: protect fluid motion over pixel density. */
@@ -247,6 +286,8 @@
       this.upload(org);
       this.easeColors(daemon.palette, dt);
       gl.bindVertexArray(this.vao);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
 
       // memory pass (~20 Hz)
       if (this.frame % 3 === 0 && dt > 0) {
@@ -264,10 +305,12 @@
         this.mem = [dst, src];
       }
 
-      // main pass
+      // main pass: the field, painted into the surface texture
       const P = this.progMain, u = P.u, c = this.colors;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.surface.fb);
+      gl.viewport(0, 0, this.surface.w, this.surface.h);
       gl.useProgram(P.p);
       this.bindField(P, time);
       gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.mem[0].tex);
@@ -286,9 +329,15 @@
       gl.uniform3fv(u.u_signal, c.signal);
       this.bindWill(daemon, u, dt);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindTexture(gl.TEXTURE_2D, this.surface.tex);
+      gl.generateMipmap(gl.TEXTURE_2D);
+
+      // the 3D scene: the surface on its board, the pieces built on it
+      this.scene.draw(time, dt, this.content);
       this.frame++;
     }
   }
 
   RUIN.Renderer = Renderer;
+  RUIN.BOARD_ASPECT = BOARD_ASPECT;
 })((window.RUIN = window.RUIN || {}));

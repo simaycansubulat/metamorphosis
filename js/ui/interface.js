@@ -2,7 +2,7 @@
  * interface.js — the participant's side of the threshold.
  *
  *   click / tap / Enter    (dormant) wake the daemon — it unfolds from there
- *   press & hold           (session) offer attention at a point
+ *   press & hold still     (session) offer attention at a point (build.js)
  *   Space                  hold: freeze the daemon to study a configuration
  *   N                      a new session (the old body dissolves, a new one grows)
  *   Esc                    end the session
@@ -10,7 +10,7 @@
  *   H                      hide every mark (only the surface remains)
  *   D                      observer's notes (state readout for the team)
  *   M                      sound on / off (the slider sets the volume)
- *   (the construction grid is handled by construction.js)
+ *   (pointing at the board, building and the camera live in build.js)
  * ------------------------------------------------------------------------- */
 (function (RUIN) {
   'use strict';
@@ -39,12 +39,6 @@
       this.syncState();
     }
 
-    toWorld(ev) {
-      const r = this.canvas.getBoundingClientRect();
-      const aspect = r.width / r.height;
-      return { x: ((ev.clientX - r.left) / r.width) * aspect, y: (ev.clientY - r.top) / r.height };
-    }
-
     seedFromURL() {
       const s = new URLSearchParams(location.search).get('seed');
       return s ? RUIN.random.codeToSeed(s) : undefined;
@@ -66,16 +60,6 @@
     bind() {
       const d = this.daemon;
       this._firstSeed = this.seedFromURL();
-
-      this.canvas.addEventListener('pointerdown', (ev) => {
-        const p = this.toWorld(ev);
-        if (d.state === 'dormant') { this.begin(p); return; }
-        if (d.state === 'session') { this.pointer = p; this.canvas.setPointerCapture(ev.pointerId); }
-      });
-      this.canvas.addEventListener('pointermove', (ev) => { if (this.pointer) this.pointer = this.toWorld(ev); });
-      const release = () => { this.pointer = null; };
-      this.canvas.addEventListener('pointerup', release);
-      this.canvas.addEventListener('pointercancel', release);
 
       this.el.hold.addEventListener('click', () => this.setHeld(!this.clock.held));
       this.el.sound.addEventListener('click', () => this.toggleSound());
@@ -151,9 +135,6 @@
       if (this.idleTimer > 0) {
         this.idleTimer -= dt;
         if (this.idleTimer <= 0 && this.daemon.state === 'session') this.body.classList.add('is-idle');
-      }
-      if (this.pointer && this.daemon.state === 'session' && !this.clock.held) {
-        this.daemon.stimulate(this.pointer.x, this.pointer.y, 0.9 * dt * 4);
       }
       const t = Math.floor(this.daemon.sessionTime);
       this.el.clockText.textContent = `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;

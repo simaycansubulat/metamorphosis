@@ -15,7 +15,13 @@ a build step, a server or any dependencies; it works offline. WebGL2 is required
 | Action | Effect |
 |---|---|
 | click / tap / Enter | wake the daemon; the configuration unfolds from where you touched |
-| press & hold the surface | offer attention at a point; nearby loci respond |
+| press & hold still on the board | offer attention at a point; nearby loci respond |
+| click on the board / a piece | set a wooden piece down where its ghost shows it (it falls until it rests) |
+| right-click a piece (or "lift" mode) | lift it; whatever rested on it falls |
+| drag · scroll / pinch | turn around the board · come closer |
+| R / shift+R · 1–6 | turn the next piece: flat, on edge or standing, across or in depth |
+| T (or "above") | look straight down, as in the flat version, and back |
+| Z | lift the last piece set down |
 | Space | **hold**: freeze the daemon to study a configuration |
 | N | a new session (the old body dissolves while a new one grows) |
 | Esc | end the session |
@@ -23,7 +29,7 @@ a build step, a server or any dependencies; it works offline. WebGL2 is required
 | H | hide every mark; only the surface remains |
 | D | observer's notes: a live readout of the daemon's state, for the team |
 | M | sound on / off (the slider beside "sound" sets the volume) |
-| **grid** (bottom left) | report the physical model: click a cell to add a piece, right-click (or "lift" mode) to remove one, "clear" (twice) when the model is taken apart |
+| **pieces** (bottom left) | choose how the next piece lies; "clear" (twice) takes the whole construction apart |
 
 Each session gets a 5-character code (top left, also written into the URL as
 `?seed=XXXXX`). Opening that URL reproduces the same initial configuration and
@@ -32,6 +38,27 @@ the same dialect. Use it to compare or to present a specific session.
 The small dot at the top left is the only signal of intent. **Filled**: the
 daemon is speaking. **Hollow**: it is listening. The listening phase is the
 moment for the participant to answer with the pieces.
+
+## In three dimensions
+
+The surface lies on a board and the participant builds on it with wooden
+pieces in Jenga proportions (3 : 1 : 0.6), laid flat, on edge or standing.
+Pieces snap to a half-cell grid and rest on whatever lies beneath them,
+so posts and lintels make arches and towers, as in the workshop models.
+The field is still painted exactly as before (into a texture on the board,
+`js/render/scene.js`), and the 3D scene keeps its language:
+
+- the matter on the board is slightly raised and catches the light
+- the pieces' shadows bleed into the linen like soot
+- the daemon's stains slowly climb each piece from its foot, with a tide
+  line, and tissue grows over pieces it has lived with
+- a rejected piece irritates (red scratches, red-walled cells, a shiver);
+  an accepted one settles, lightens and takes a faint moss
+- every edge is a wobbly ink line, every face slightly uneven
+
+The construction is reported to the will as the same 8 × 5 height map
+(one flat piece = one level, a standing piece = five), so the intention,
+evaluation and negotiation below are unchanged.
 
 ## The loop: intention, construction, negotiation
 
@@ -218,11 +245,12 @@ js/
              composition.js  initial configuration of a session
              mind.js         grammar: gestures, phrases, listening
              daemon.js       public API (the only thing other modules use)
-  render/    shaders.js · renderer.js   WebGL2 painting (tile-binned field)
+  render/    shaders.js · renderer.js   WebGL2 painting (tile-binned field → surface texture)
+             scene.js        the 3D board, the pieces, soot shadows, camera, picking
   sound/     synth.js        dry percussive voices (click, tap, knock, thud, pulse, rattle)
              sonifier.js     event → sound, shaped by the will's insistence
   ui/        interface.js    threshold, marks, keyboard, pointer, volume, notes
-             construction.js the grid: the participant's report of the model
+             build.js        building in 3D: pieces, stacking, lifting, camera controls
   main.js    wiring
 ```
 

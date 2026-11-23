@@ -27,24 +27,13 @@
     <div class="mark mark--controls">
       <button type="button" id="btn-sound" title="sound (m)" aria-pressed="true">sound</button>
       <input type="range" id="volume" min="0" max="1" step="0.01" value="0.75" aria-label="volume" title="volume">
+      <button type="button" id="btn-view" title="look from above (t)" aria-pressed="false">above</button>
       <button type="button" id="btn-hold" title="hold (space)">hold</button>
       <button type="button" id="btn-new" title="new session (n)">anew</button>
       <button type="button" id="btn-end" title="end session (esc)">end</button>
     </div>
   </div>
 
-
-  <!-- The construction: wooden pieces built on the surface, in 3D. -->
-  <aside class="site" id="site" aria-label="building pieces">
-    <div class="site__shapes" role="group" aria-label="how the next piece lies"></div>
-    <div class="site__bar">
-      <span class="site__count">0 pieces</span>
-      <button type="button" class="site__mode" aria-pressed="false" title="when on, clicks lift pieces (or right-click a piece)">lift</button>
-      <button type="button" class="site__view" aria-pressed="false" title="look from above (t)">above</button>
-      <button type="button" class="site__clear" title="take the whole construction apart">clear</button>
-    </div>
-    <p class="site__hint">click: set down · right-click: lift · drag: turn around · scroll: closer · r: turn the piece · hold still: offer attention</p>
-  </aside>
 
   <!-- Observer's notes (press D): a reading of the daemon's state, for the team. -->
   <pre class="notes" id="notes" hidden></pre>
@@ -64,13 +53,14 @@
   <script src="js/daemon/composition.js"></script>
   <script src="js/daemon/mind.js"></script>
   <script src="js/daemon/daemon.js"></script>
+  <script src="js/daemon/growth.js"></script>
   <script src="js/render/shaders.js"></script>
   <script src="js/render/scene.js"></script>
   <script src="js/render/renderer.js"></script>
   <script src="js/sound/synth.js"></script>
   <script src="js/sound/sonifier.js"></script>
   <script src="js/ui/interface.js"></script>
-  <script src="js/ui/build.js"></script>
+  <script src="js/ui/view.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

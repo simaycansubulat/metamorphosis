@@ -27,7 +27,9 @@
   const synth = new RUIN.Synth();
   const sonifier = new RUIN.Sonifier(daemon, synth);
   const ui = new RUIN.Interface({ daemon, canvas, clock, synth });
-  const site = new RUIN.Build({ daemon, renderer, ui, canvas, clock, root: document.getElementById('site') });
+  const growth = new RUIN.Growth({ daemon, aspect: renderer.aspect });
+  renderer.scene.growth = growth;
+  const view = new RUIN.View({ daemon, renderer, growth, ui, canvas, clock });
 
   window.addEventListener('resize', () => renderer.resize());
 
@@ -39,8 +41,9 @@
     const dt = clock.held || document.hidden ? 0 : raw;
     time += dt;
     daemon.update(dt);
+    growth.update(dt);
     ui.update(raw);
-    site.update(raw);
+    view.update(raw);
     sonifier.update(raw);
     const t0 = performance.now();
     renderer.render(daemon, dt, time);
@@ -50,5 +53,5 @@
   requestAnimationFrame(frame);
 
   window.daemon = daemon;
-  window.RUIN.app = { daemon, renderer, ui, synth, sonifier, site };
+  window.RUIN.app = { daemon, renderer, ui, synth, sonifier, growth, view };
 })(window.RUIN);

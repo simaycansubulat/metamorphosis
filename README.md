@@ -15,13 +15,9 @@ a build step, a server or any dependencies; it works offline. WebGL2 is required
 | Action | Effect |
 |---|---|
 | click / tap / Enter | wake the daemon; the configuration unfolds from where you touched |
-| press & hold still on the board | offer attention at a point; nearby loci respond |
-| click on the board / a piece | set a wooden piece down where its ghost shows it (it falls until it rests) |
-| right-click a piece (or "lift" mode) | lift it; whatever rested on it falls |
-| drag · scroll / pinch | turn around the board · come closer |
-| R / shift+R · 1–6 | turn the next piece: flat, on edge or standing, across or in depth |
+| press & hold still on the board | offer attention at a point; nearby loci respond and nearby pieces grow faster |
+| drag · scroll / pinch | turn around the board · come closer (left alone, the view turns slowly) |
 | T (or "above") | look straight down, as in the flat version, and back |
-| Z | lift the last piece set down |
 | Space | **hold**: freeze the daemon to study a configuration |
 | N | a new session (the old body dissolves while a new one grows) |
 | Esc | end the session |
@@ -29,7 +25,6 @@ a build step, a server or any dependencies; it works offline. WebGL2 is required
 | H | hide every mark; only the surface remains |
 | D | observer's notes: a live readout of the daemon's state, for the team |
 | M | sound on / off (the slider beside "sound" sets the volume) |
-| **pieces** (bottom left) | choose how the next piece lies; "clear" (twice) takes the whole construction apart |
 
 Each session gets a 5-character code (top left, also written into the URL as
 `?seed=XXXXX`). Opening that URL reproduces the same initial configuration and
@@ -39,26 +34,34 @@ The small dot at the top left is the only signal of intent. **Filled**: the
 daemon is speaking. **Hollow**: it is listening. The listening phase is the
 moment for the participant to answer with the pieces.
 
-## In three dimensions
+## In three dimensions: the daemon grows its body
 
-The surface lies on a board and the participant builds on it with wooden
-pieces in Jenga proportions (3 : 1 : 0.6), laid flat, on edge or standing.
-Pieces snap to a half-cell grid and rest on whatever lies beneath them,
-so posts and lintels make arches and towers, as in the workshop models.
-The field is still painted exactly as before (into a texture on the board,
-`js/render/scene.js`), and the 3D scene keeps its language:
+The surface lies on a board, and out of it the daemon grows its own pieces.
+Nobody places them. Every session unfolds a different composition from the
+seed and from the will's intention (`js/daemon/growth.js`): spires, stacks,
+crosses, twin posts, arches spanning two places, low slabs and knots. The
+pieces rise one after another, and the upper ones only once what carries
+them has grown. A few stray pieces grow where it does not want matter;
+they irritate and, after a while, sink back into the surface.
 
-- the matter on the board is slightly raised and catches the light
-- the pieces' shadows bleed into the linen like soot
-- the daemon's stains slowly climb each piece from its foot, with a tide
-  line, and tissue grows over pieces it has lived with
-- a rejected piece irritates (red scratches, red-walled cells, a shiver);
-  an accepted one settles, lightens and takes a faint moss
-- every edge is a wobbly ink line, every face slightly uneven
+The pieces are not blocks: each is a subdivided form that is tapered, bent,
+swollen, with its corners pulled in and every vertex knocked, so it is
+irregular, sharp-faceted and organic. The field is still painted exactly
+as before (into a texture on the board, `js/render/scene.js`), and its
+pattern continues onto the pieces:
 
-The construction is reported to the will as the same 8 × 5 height map
-(one flat piece = one level, a standing piece = five), so the intention,
-evaluation and negotiation below are unchanged.
+- the ground's stains and veins are folded up the sides of each piece, and
+  its cell tissue (walls thickening at junctions, nuclei) covers every facet
+- only the sharp folds are inked, with a wobbling hand-drawn line
+- shadows bleed into the linen like soot; the matter on the board is
+  slightly raised
+- freshly grown matter is pale; a piece the will reads as excess irritates
+  (red scratches, a shiver); accepted ones settle, with a faint moss
+
+The body is reported to the will as the same 8 × 5 height map, so the loop
+below now runs between the daemon and its own growth: lack stains gather
+where it has not grown yet, and it settles as the form completes. The
+participant watches, turns around it and offers attention.
 
 ## The loop: intention, construction, negotiation
 
@@ -239,6 +242,7 @@ js/
   core/      random.js (seeded RNG, session codes) · noise.js · emitter.js
   daemon/    palette.js      earth pigments (+ the oxide-red signal colour)
              will.js         the intention, the model, evaluation, negotiation
+             growth.js       the body: pieces grown from the intention, every session anew
              temperament.js  seed → dialect (reshaped by the will)
              forms.js        the vocabulary (5 characters)
              organism.js     body: loci, spots, bonds, physics, flows
@@ -246,11 +250,11 @@ js/
              mind.js         grammar: gestures, phrases, listening
              daemon.js       public API (the only thing other modules use)
   render/    shaders.js · renderer.js   WebGL2 painting (tile-binned field → surface texture)
-             scene.js        the 3D board, the pieces, soot shadows, camera, picking
+             scene.js        the 3D board, organic piece meshes, soot shadows, camera
   sound/     synth.js        dry percussive voices (click, tap, knock, thud, pulse, rattle)
              sonifier.js     event → sound, shaped by the will's insistence
   ui/        interface.js    threshold, marks, keyboard, pointer, volume, notes
-             build.js        building in 3D: pieces, stacking, lifting, camera controls
+             view.js         turning around the board, attention, the view from above
   main.js    wiring
 ```
 

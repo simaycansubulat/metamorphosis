@@ -2,7 +2,7 @@
  * interface.js — the participant's side of the threshold.
  *
  *   click / tap / Enter    (dormant) wake the daemon — it unfolds from there
- *   press & hold still     (session) offer attention at a point (build.js)
+ *   press & hold still     (session) offer attention at a point (view.js)
  *   Space                  hold: freeze the daemon to study a configuration
  *   N                      a new session (the old body dissolves, a new one grows)
  *   Esc                    end the session
@@ -10,7 +10,7 @@
  *   H                      hide every mark (only the surface remains)
  *   D                      observer's notes (state readout for the team)
  *   M                      sound on / off (the slider sets the volume)
- *   (pointing at the board, building and the camera live in build.js)
+ *   (pointing at the board and the camera live in view.js)
  * ------------------------------------------------------------------------- */
 (function (RUIN) {
   'use strict';
@@ -156,7 +156,7 @@
         ...(s.will ? [
           '',
           `will      wants ${s.will.intention}${s.will.accord ? ' · ACCORD' : ''}`,
-          `model     ${s.will.pieces} pieces${s.will.engaged ? '' : ' (nothing reported yet)'}`,
+          `body      ${s.will.pieces} pieces grown${s.will.engaged ? '' : ' (nothing grown yet)'}`,
           `alignment ${bar(s.will.alignment)} ${s.will.alignment.toFixed(2)}`,
           `insists   ${bar(s.will.insistence)} ${s.will.insistence.toFixed(2)}  urgency ${s.will.urgency.toFixed(2)}`,
           `focus     ${s.will.focus.map((f) => `${f.kind === 'lack' ? '+' : '−'}(${f.i + 1},${f.j + 1})`).join(' ') || '—'}`,

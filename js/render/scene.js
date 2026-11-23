@@ -1,18 +1,19 @@
 /* ---------------------------------------------------------------------------
- * scene.js — the daemon's surface in three dimensions.
+ * scene.js — the daemon's surface in three dimensions, and its body.
  *
  * The living field (stains, veins, tissue) is still painted exactly as
- * before, but into a texture that lies on a BOARD. The participant builds on
- * that board with wooden pieces (Jenga proportions, 3 : 1 : 0.6).
+ * before, but into a texture that lies on a BOARD. Out of that board the
+ * daemon grows its own PIECES (growth.js): irregular, sharp-faceted, organic
+ * forms, different every session.
  *
- * Nothing in the 3D scene breaks the organic language:
+ * Nothing in the 3D scene breaks the language:
  *   - the board is the field itself; its matter is slightly raised (relief)
+ *   - the field's pattern continues onto the pieces, folded up their sides,
+ *     so stains, veins and cells wrap over every facet
  *   - shadows are not black: they bleed into the linen like soot
- *   - the daemon's stains slowly CLIMB the pieces from their foot, with a
- *     tide line, and tissue grows over pieces it has lived with for a while
- *   - pieces it rejects irritate: red scratches, red-walled cells, a shiver
- *   - pieces it accepts settle and lighten, a faint moss in their cells
- *   - every edge is a wobbly ink line, every face slightly uneven
+ *   - only the sharp folds are inked, with a wobbling hand-drawn line
+ *   - freshly grown matter is pale; pieces it rejects irritate (red
+ *     scratches, a shiver); pieces it accepts settle, with a faint moss
  *
  * World mapping: daemon world (x, y) with x ∈ [0, A], y ∈ [0, 1]
  *   →  3D (X = x − A/2, Y = up, Z = y − 0.5).  Surface texture uv = (x/A, 1 − y).
@@ -212,167 +213,224 @@
     outColor = vec4(col, 1.0);
   }`;
 
-  /* a piece (or the board's edge, or the ghost of the next piece) */
-  const BLOCK_VS = HEAD + `
+  /* a piece of the daemon's body (or the board's edge) */
+  const PIECE_VS = HEAD + `
   layout(location = 0) in vec3 a_pos;
   layout(location = 1) in vec3 a_nrm;
+  layout(location = 2) in vec3 a_bary;
+  layout(location = 3) in vec3 a_crease;
   uniform mat4 u_viewProj;
-  uniform vec3 u_center, u_half;
-  uniform float u_seed, u_shake, u_time, u_wobble;
-  out vec3 v_world, v_local, v_nrm;
-  float h13(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
-  float vn(vec3 x) {
-    vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(mix(h13(i), h13(i + vec3(1, 0, 0)), f.x), mix(h13(i + vec3(0, 1, 0)), h13(i + vec3(1, 1, 0)), f.x), f.y),
-               mix(mix(h13(i + vec3(0, 0, 1)), h13(i + vec3(1, 0, 1)), f.x), mix(h13(i + vec3(0, 1, 1)), h13(i + vec3(1, 1, 1)), f.x), f.y), f.z);
-  }
+  uniform vec3 u_anchor, u_scale;
+  uniform float u_yaw, u_seed, u_shake, u_time;
+  out vec3 v_world, v_nrm, v_bary, v_crease;
   void main() {
-    vec3 lp = a_pos * u_half;
-    vec3 wp = u_center + lp;
-    // hand-made, slightly uneven: displacement depends only on position → no cracks
-    float wob = vn(wp * 42.0 + u_seed * 13.0) - 0.5;
-    wp += normalize(a_pos) * wob * 0.0026 * u_wobble;
-    // a rejected piece shivers
-    wp.xz += vec2(sin(u_time * 41.0 + u_seed * 9.0), cos(u_time * 37.0 + u_seed * 5.0)) * u_shake * 0.0011;
-    v_world = wp; v_local = a_pos; v_nrm = a_nrm;
+    float c = cos(u_yaw), s = sin(u_yaw);
+    vec3 lp = a_pos * u_scale;
+    vec3 rp = vec3(c * lp.x + s * lp.z, lp.y, -s * lp.x + c * lp.z);
+    vec3 n = normalize(a_nrm / max(u_scale, vec3(0.05)));
+    v_nrm = vec3(c * n.x + s * n.z, n.y, -s * n.x + c * n.z);
+    vec3 wp = u_anchor + rp;
+    wp.xz += vec2(sin(u_time * 41.0 + u_seed * 9.0), cos(u_time * 37.0 + u_seed * 5.0)) * u_shake * 0.0012 * step(0.001, wp.y);
+    v_world = wp; v_bary = a_bary; v_crease = a_crease;
     gl_Position = u_viewProj * vec4(wp, 1.0);
   }`;
 
-  const BLOCK_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
+  const PIECE_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
   uniform sampler2D u_surface, u_will;
   uniform vec4  u_gridRect;
-  uniform vec3  u_center, u_half;
-  uniform float u_seed, u_grow, u_mode, u_valid;   // mode: 0 piece · 1 ghost · 2 board edge
+  uniform float u_seed, u_g, u_mode;     // mode: 0 piece · 2 board edge
   uniform int   u_self;
-  uniform vec3  u_paper, u_paperDeep, u_cream, u_ink, u_inkEdge, u_tissue, u_signal, u_washA, u_fog, u_eye;
-  in vec3 v_world, v_local, v_nrm;
+  uniform vec3  u_paperDeep, u_cream, u_ink, u_inkEdge, u_signal, u_washA, u_washB, u_tissue, u_fog, u_eye;
+  in vec3 v_world, v_nrm, v_bary, v_crease;
   out vec4 outColor;
+  vec2 mirror(vec2 uv) { return 1.0 - abs(1.0 - mod(uv, 2.0)); }
   void main() {
     vec3 n = normalize(v_nrm);
     vec3 wp = v_world;
-    vec3 an = abs(n);
-    // coordinates on the face and distance to its edges
-    vec2 fc, fh;
-    if (an.x > 0.5)      { fc = vec2(v_local.z * u_half.z, v_local.y * u_half.y); fh = u_half.zy; }
-    else if (an.y > 0.5) { fc = vec2(v_local.x * u_half.x, v_local.z * u_half.z); fh = u_half.xz; }
-    else                 { fc = vec2(v_local.x * u_half.x, v_local.y * u_half.y); fh = u_half.xy; }
-    vec2 ed = fh - abs(fc);
-    float edge = min(ed.x, ed.y);
-    float lw = 0.0016 + 0.0011 * snoise(vec2(dot(wp, vec3(53.0, 31.0, 47.0)), u_seed * 7.0));
-    float line = 1.0 - smoothstep(lw * 0.35, lw, edge);
+    float ndl = dot(n, u_light);
 
-    if (u_mode > 0.5 && u_mode < 1.5) {          // ghost: where the next piece would land
-      vec3 gc = mix(u_signal, u_cream, u_valid);
-      float a = 0.26 + 0.55 * line * (0.6 + 0.4 * step(0.0, sin((fc.x + fc.y) * 260.0)));
-      outColor = vec4(mix(gc, u_ink, line * 0.6) * (0.85 + 0.15 * max(dot(n, u_light), 0.0)), a);
-      return;
+    // ink on the sharp folds only (crease edges), drawn by hand
+    float line = 0.0;
+    vec3 bw = fwidth(v_bary);
+    float wob = 1.1 + 0.7 * snoise(vec2(dot(wp, vec3(61.0, 37.0, 43.0)), u_seed));
+    for (int k = 0; k < 3; k++) {
+      if (v_crease[k] < 0.5) continue;
+      float d = v_bary[k] / max(bw[k], 1e-5);
+      line = max(line, 1.0 - smoothstep(wob * 0.5, wob, d));
     }
 
-    float ndl = dot(n, u_light);
-    if (u_mode > 1.5) {                          // the board's edge: dark linen, inked
+    if (u_mode > 1.5) {                      // the board's edge: dark linen, inked
       vec3 c = u_paperDeep * 0.55 * (0.82 + 0.18 * max(ndl, 0.0));
-      c *= 0.94 + 0.1 * fbm(fc * 30.0);
-      c = mix(c, u_ink, line * 0.7);
+      c *= 0.94 + 0.1 * fbm(wp.xy * 30.0 + wp.zy * 30.0);
+      c = mix(c, u_ink, line * 0.6);
       outColor = vec4(mix(c, u_fog, smoothstep(1.6, 4.5, distance(wp, u_eye)) * 0.45), 1.0);
       return;
     }
 
-    // --- wood, read as a pale pigment with ink grain --------------------------
-    vec3 L = u_half.x >= u_half.y && u_half.x >= u_half.z ? vec3(1, 0, 0) : (u_half.y >= u_half.z ? vec3(0, 1, 0) : vec3(0, 0, 1));
-    vec3 P1 = L.x > 0.5 ? vec3(0, 1, 0) : vec3(1, 0, 0);
-    vec3 P2 = cross(L, P1);
-    float along = dot(wp, L), acr = dot(wp, P1) + dot(wp, P2);
-    float g = snoise(vec2(along * 5.0 + u_seed * 3.0, acr * 150.0 + snoise(vec2(along * 9.0, acr * 20.0)) * 1.5));
-    vec3 base = mix(u_paper, u_paperDeep, 0.5) * vec3(1.03, 0.97, 0.88);
-    base *= 1.0 - smoothstep(0.35, 0.95, g) * 0.14;
-    base *= 0.94 + 0.08 * fbm(vec2(along * 14.0, acr * 30.0) + u_seed);
+    // --- the ground's pattern, continued onto the piece -----------------------------
+    // top faces see the surface right beneath them; side faces read it as if the
+    // surface were folded up the piece, so stains and tissue wrap over the folds
+    vec3 tw = pow(abs(n), vec3(4.0)); tw /= tw.x + tw.y + tw.z;
+    float lift = wp.y * 1.15;
+    vec2 uvY = boardUV(wp);
+    vec2 uvX = mirror(boardUV(vec3(wp.x + sign(n.x) * lift, 0.0, wp.z)));
+    vec2 uvZ = mirror(boardUV(vec3(wp.x, 0.0, wp.z + sign(n.z) * lift)));
+    vec4 sY = texture(u_surface, uvY), sX = texture(u_surface, uvX), sZ = texture(u_surface, uvZ);
+    vec4 pat = sX * tw.x + sY * tw.y + sZ * tw.z;
+    vec3 col = pat.rgb;
+    // the piece is made of the same pigment: where the ground beneath is bare,
+    // its own wash shows through
+    float wn = fbm(wp.xz * 7.0 + wp.y * 5.0 + u_seed) * 0.5 + 0.5;
+    vec3 washCol = mix(u_washA, u_washB, wn);
+    col = mix(col, col * washCol * 1.25, 0.55 * (1.0 - pat.a));
 
-    // --- the field climbs the piece from its foot ---------------------------------
-    vec2 buv = boardUV(wp);
-    vec4 ground = textureLod(u_surface, buv, 3.5);
-    float matter = ground.a;
-    float wave = 0.65 + 0.7 * (fbm(vec2(dot(wp.xz, vec2(37.0, 29.0)), wp.y * 30.0) + u_seed) * 0.5 + 0.5);
-    float climbH = (0.006 + 0.075 * u_grow * (0.35 + matter)) * wave;
-    float climb = 1.0 - smoothstep(climbH - 0.004, climbH + 0.004, wp.y);
-    float tide = exp(-pow((wp.y - climbH) / 0.0025, 2.0)) * smoothstep(0.004, 0.02, climbH);
-    vec3 col = mix(base, ground.rgb * 0.92, climb * 0.82);
-    col *= mix(vec3(1.0), u_inkEdge * 1.3, tide * 0.55);
+    // --- the ground's tissue grows over every facet: cells, junctions, nuclei ----------
+    vec2 q = tw.y > max(tw.x, tw.z) ? wp.xz : (tw.x > tw.z ? vec2(wp.z, wp.y) : vec2(wp.x, wp.y));
+    q += 0.012 * vec2(fbm(q * 14.0 + u_seed), fbm(q * 14.0 - u_seed));
+    vec4 v1 = voronoi(q * 32.0 + u_seed, u_time);
+    vec4 v2 = voronoi(q * 85.0 + 13.0 + u_seed, u_time * 1.3);
+    float e1 = v1.y - v1.x, e2 = v2.y - v2.x;
+    float junction = 1.0 - smoothstep(0.0, 0.32, v1.w - v1.x);
+    float w1 = 0.03 + 0.03 * (0.5 + 0.5 * snoise(q * 20.0)) + 0.09 * junction * junction;
+    float mem = max(1.0 - smoothstep(w1 * 0.3, w1, e1), (1.0 - smoothstep(0.02, 0.07, e2)) * 0.6);
+    float nucleus = step(0.72, v1.z) * exp(-pow((v1.x - 0.16) / 0.03, 2.0));
+    mem = clamp(mem + nucleus * 0.7, 0.0, 1.0);
+    col *= 1.0 - (1.0 - smoothstep(0.0, 0.5, e1)) * 0.14;          // cells bulge
+    float lum = dot(col, vec3(0.3, 0.59, 0.11));
+    vec3 wallCol = mix(u_cream, u_tissue, smoothstep(0.22, 0.42, lum));
+    col = mix(col, wallCol, mem * 0.55);
 
-    // --- the will, read where the piece stands -------------------------------------
+    // each facet catches the pigment a little differently: sharp, mineral
+    vec3 fn = floor(n * 9.0 + 0.5);
+    col *= 0.9 + 0.14 * hash12(fn.xz + fn.y * 7.0 + u_seed);
+    col *= mix(vec3(1.0), u_inkEdge * 1.35, 0.06 + pat.a * 0.14);
+
+    // freshly grown matter is pale, like new tissue
+    col = mix(col, u_cream, (1.0 - u_g) * 0.4);
+
+    // --- the will, read where the piece stands --------------------------------------
     vec2 wx = vec2(wp.x + 0.5 * u_aspect, wp.z + 0.5);
     vec2 gq = (wx - u_gridRect.xy) / (u_gridRect.zw - u_gridRect.xy);
     vec4 will = texture(u_will, gq);
     vec2 ge = min(gq, 1.0 - gq);
     will *= smoothstep(-0.05, 0.04, min(ge.x, ge.y));
     float excess = clamp(will.g, 0.0, 1.0), harmony = clamp(will.b, 0.0, 1.0);
-
-    // --- tissue: cells grow over pieces it has lived with -------------------------------
-    vec2 tq = fc * 62.0 + n.xz * 11.0 + n.y * 5.0 + u_seed * 17.0;
-    tq += 0.35 * vec2(snoise(tq * 0.3), snoise(tq * 0.3 + 4.0));
-    vec4 v1 = voronoi(tq, u_time);
-    float e1 = v1.y - v1.x;
-    float junction = 1.0 - smoothstep(0.0, 0.3, v1.w - v1.x);
-    float wl = 0.03 + 0.07 * junction * junction;
-    float membrane = 1.0 - smoothstep(wl * 0.3, wl, e1);
-    float tissue = clamp(climb * 0.55 + u_grow * 0.3 * (0.4 + matter) + excess * 0.9 + harmony * 0.25, 0.0, 1.0);
-    tissue *= smoothstep(0.2, 0.6, fbm(fc * 9.0 + u_seed) * 0.5 + 0.5 + tissue * 0.6);
-    float lum = dot(col, vec3(0.3, 0.59, 0.11));
-    vec3 lineCol = mix(u_cream, u_tissue, smoothstep(0.22, 0.42, lum));
-    lineCol = mix(lineCol, u_signal * 0.85, excess * 0.8);
-    col *= 1.0 - (1.0 - smoothstep(0.0, 0.5, e1)) * 0.1 * tissue;
-    col = mix(col, lineCol, membrane * tissue * 0.5);
-
-    // --- rejected: red fibrous scratches; accepted: it settles, a faint moss ---------
-    float scratch = smoothstep(0.6, 0.95, snoise(vec2(along * 28.0 + u_time * 0.35, acr * 150.0) + 2.0 * fbm(fc * 5.0 + u_time * 0.05)));
+    vec2 sq = vec2(dot(wp.xz, vec2(0.8, 0.6)) * 30.0 + u_time * 0.35, wp.y * 150.0);
+    float scratch = smoothstep(0.6, 0.95, snoise(sq + 2.0 * fbm(wp.xz * 9.0 + u_time * 0.05)));
     scratch *= excess * (0.55 + 0.45 * sin(u_time * 5.0 + u_seed * 3.0));
-    col = mix(col, u_signal * 0.85, scratch * 0.55 + excess * 0.12);
-    col = mix(col, mix(u_cream, u_washA, 0.35), harmony * 0.16);
+    col = mix(col, u_signal * 0.85, scratch * 0.55 + excess * 0.14);
+    col = mix(col, mix(u_cream, u_washA, 0.35), harmony * 0.14);
 
-    // --- light: soft, paper-like; other pieces cast shadows ---------------------------
-    vec3 ro = wp + n * 0.0012 + 0.002 * vec3(snoise(wp.xz * 90.0), 0.0, snoise(wp.zx * 90.0 + 3.0));
+    // --- light: crisp facets, other pieces cast shadows -----------------------------------
+    vec3 ro = wp + n * 0.0015;
     float sh = ndl > 0.0 ? rayShadow(ro, u_light, u_self) : 0.0;
-    float lit = 0.6 + 0.42 * max(ndl, 0.0) * sh + 0.06 * n.y;
-    lit *= 0.78 + 0.22 * smoothstep(0.0, 0.035, wp.y);           // contact with the board
+    float lit = 0.5 + 0.55 * max(ndl, 0.0) * sh + 0.08 * n.y;
+    lit *= 0.75 + 0.25 * smoothstep(0.0, 0.03, wp.y);
     col *= lit;
-    col = mix(col, u_inkEdge * 0.9, (1.0 - sh) * step(0.0, ndl) * 0.06);
 
-    // --- ink: every edge is drawn by hand ---------------------------------------------
-    col = mix(col, u_ink, line * 0.82);
-
+    col = mix(col, u_ink, line * 0.75);
     col = mix(col, u_fog, smoothstep(1.6, 4.5, distance(wp, u_eye)) * 0.45);
     outColor = vec4(col, 1.0);
   }`;
 
   /* ------------------------------------------------------------ meshes */
-  function cubeMesh(sub) {
-    const pos = [], nrm = [], idx = [];
-    const faces = [
-      { n: [1, 0, 0], u: [0, 0, -1], v: [0, 1, 0] }, { n: [-1, 0, 0], u: [0, 0, 1], v: [0, 1, 0] },
-      { n: [0, 1, 0], u: [1, 0, 0], v: [0, 0, -1] }, { n: [0, -1, 0], u: [1, 0, 0], v: [0, 0, 1] },
-      { n: [0, 0, 1], u: [1, 0, 0], v: [0, 1, 0] }, { n: [0, 0, -1], u: [-1, 0, 0], v: [0, 1, 0] },
-    ];
-    for (const f of faces) {
-      const base = pos.length / 3;
-      for (let j = 0; j <= sub; j++) for (let i = 0; i <= sub; i++) {
-        const a = (i / sub) * 2 - 1, b = (j / sub) * 2 - 1;
-        pos.push(f.n[0] + f.u[0] * a + f.v[0] * b, f.n[1] + f.u[1] * a + f.v[1] * b, f.n[2] + f.u[2] * a + f.v[2] * b);
-        nrm.push(...f.n);
+  // Each piece is a box roughly the size of its plan, subdivided and then
+  // deformed: tapered, bent, swollen by noise, its corners pulled in and every
+  // vertex knocked a little → irregular, sharp-faceted, organic. Triangles are
+  // kept separate (flat facets) and every fold sharper than ~35° is marked
+  // so the shader can ink it.
+  const KINDS = {
+    post:  (r) => ({ top: r.float(0.55, 0.9), tp: 1.4, tip: 0.06, bend: r.float(-0.12, 0.12), bulge: 0.14, jit: 0.12, corner: r.float(0.18, 0.35), f: 18 }),
+    shard: (r) => ({ top: r.float(0.04, 0.18), tp: 1.1, tip: 0.25, bend: r.float(-0.2, 0.2), bulge: 0.12, jit: 0.14, corner: r.float(0.2, 0.4), f: 20 }),
+    slab:  (r) => ({ top: r.float(0.8, 0.95), tp: 1, tip: 0.02, bend: 0, bulge: 0.1, jit: 0.1, corner: r.float(0.25, 0.45), f: 16, sag: r.float(-0.25, 0.25) }),
+    knot:  (r) => ({ top: r.float(0.45, 0.75), tp: 1.2, tip: 0.08, bend: r.float(-0.1, 0.1), bulge: 0.28, jit: 0.16, corner: r.float(0.3, 0.5), f: 24 }),
+    box:   () => ({ top: 1, tp: 1, tip: 0, bend: 0, bulge: 0, jit: 0, corner: 0, f: 1 }),
+  };
+
+  function pieceGeometry(kind, size, seed) {
+    const rng = new RUIN.Random(seed >>> 0);
+    const noise = RUIN.createNoise3D(rng);
+    const K = KINDS[kind](rng);
+    const [sx, sy, sz] = size;
+    const seg = (d) => (kind === 'box' ? 1 : Math.max(1, Math.min(5, Math.round(d / 0.026))));
+    const nx = seg(sx), ny = seg(sy), nz = seg(sz);
+    const tipX = rng.float(-1, 1) * K.tip, tipZ = rng.float(-1, 1) * K.tip;
+    const md = Math.min(sx, sz, kind === 'slab' ? sy * 1.6 : 9);
+    const verts = new Map();
+    const P = [];
+    const vid = (a, b, c) => {
+      const k = a + ',' + b + ',' + c;
+      if (verts.has(k)) return verts.get(k);
+      const u = a / nx - 0.5, v = b / ny, w = c / nz - 0.5;
+      let x = u * sx, y = v * sy, z = w * sz;
+      if (kind !== 'box') {
+        const t = Math.pow(v, K.tp);
+        const taper = 1 + (K.top - 1) * t;
+        x *= taper; z *= taper;
+        x += (tipX * sx + K.bend * sy) * t * t; z += tipZ * sz * t * t;
+        if (K.sag) y += K.sag * sy * (1 - 4 * u * u) * (v > 0 ? 1 : 0.6);
+        // organic corners: vertical edges and top rims are pulled in
+        const ex = Math.abs(u) > 0.49, ez = Math.abs(w) > 0.49;
+        if (ex && ez) { x *= 1 - K.corner * 0.5; z *= 1 - K.corner * 0.5; }
+        if ((ex || ez) && v > 0.99) y -= K.corner * Math.min(sy, md) * 0.35;
+        // swelling
+        const nb = noise(x * K.f + seed % 97, y * K.f, z * K.f);
+        x *= 1 + K.bulge * nb; z *= 1 + K.bulge * nb;
+        // sharp knocks
+        const j = K.jit * md;
+        x += rng.float(-j, j); z += rng.float(-j, j);
+        if (v > 0) y += rng.float(-j, j) * 0.6;
+        y = Math.max(0, y);
       }
-      for (let j = 0; j < sub; j++) for (let i = 0; i < sub; i++) {
-        const k = base + j * (sub + 1) + i;
-        idx.push(k, k + 1, k + sub + 2, k, k + sub + 2, k + sub + 1);
-      }
-    }
-    return { pos: new Float32Array(pos), nrm: new Float32Array(nrm), idx: new Uint16Array(idx) };
-  }
-  function gridMesh(nx, ny) {
-    const uv = [], idx = [];
-    for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++) uv.push(i / nx, j / ny);
+      const id = P.length / 3;
+      P.push(x, y, z);
+      verts.set(k, id);
+      return id;
+    };
+    const tris = [];
+    const quad = (a, b, c, d) => { tris.push([a, b, c], [a, c, d]); };
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-      const k = j * (nx + 1) + i;
-      idx.push(k, k + nx + 1, k + 1, k + 1, k + nx + 1, k + nx + 2);
+      quad(vid(i, j, nz), vid(i + 1, j, nz), vid(i + 1, j + 1, nz), vid(i, j + 1, nz));           // +z
+      quad(vid(i + 1, j, 0), vid(i, j, 0), vid(i, j + 1, 0), vid(i + 1, j + 1, 0));               // -z
     }
-    return { uv: new Float32Array(uv), idx: new Uint32Array(idx) };
+    for (let j = 0; j < ny; j++) for (let k = 0; k < nz; k++) {
+      quad(vid(nx, j, nz - k), vid(nx, j, nz - k - 1), vid(nx, j + 1, nz - k - 1), vid(nx, j + 1, nz - k)); // +x
+      quad(vid(0, j, k), vid(0, j, k + 1), vid(0, j + 1, k + 1), vid(0, j + 1, k));               // -x
+    }
+    for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) {
+      quad(vid(i, ny, nz - k), vid(i + 1, ny, nz - k), vid(i + 1, ny, nz - k - 1), vid(i, ny, nz - k - 1)); // +y
+      quad(vid(i, 0, k), vid(i + 1, 0, k), vid(i + 1, 0, k + 1), vid(i, 0, k + 1));               // -y
+    }
+    // face normals (outward, from the piece's axis)
+    const cy = sy * 0.5;
+    const normals = tris.map(([a, b, c]) => {
+      const A = [P[a * 3], P[a * 3 + 1], P[a * 3 + 2]], B = [P[b * 3], P[b * 3 + 1], P[b * 3 + 2]], C = [P[c * 3], P[c * 3 + 1], P[c * 3 + 2]];
+      let n = V.norm(V.cross(V.sub(B, A), V.sub(C, A)));
+      const m = [(A[0] + B[0] + C[0]) / 3, (A[1] + B[1] + C[1]) / 3 - cy, (A[2] + B[2] + C[2]) / 3];
+      if (V.dot(n, m) < 0) n = V.mul(n, -1);
+      return n;
+    });
+    // creases: edges whose two faces fold sharply
+    const edges = new Map();
+    tris.forEach((t, f) => { for (let e = 0; e < 3; e++) { const a = t[(e + 1) % 3], b = t[(e + 2) % 3]; const k = a < b ? a + '_' + b : b + '_' + a; (edges.get(k) || edges.set(k, []).get(k)).push(f); } });
+    const crease = tris.map((t, f) => [0, 1, 2].map((e) => {
+      const a = t[(e + 1) % 3], b = t[(e + 2) % 3];
+      const L = edges.get(a < b ? a + '_' + b : b + '_' + a);
+      const o = L.find((g) => g !== f);
+      return o == null || V.dot(normals[f], normals[o]) < 0.62 ? 1 : 0;
+    }));
+    const n = tris.length * 3;
+    const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), bary = new Float32Array(n * 3), cr = new Float32Array(n * 3);
+    tris.forEach((t, f) => {
+      for (let k = 0; k < 3; k++) {
+        const o = (f * 3 + k) * 3;
+        pos.set([P[t[k] * 3], P[t[k] * 3 + 1], P[t[k] * 3 + 2]], o);
+        nrm.set(normals[f], o);
+        bary[o + k] = 1;
+        cr.set(crease[f], o);
+      }
+    });
+    return { pos, nrm, bary, cr, count: n };
   }
 
   /* ------------------------------------------------------------- Scene */
@@ -383,10 +441,9 @@
       this.progBG = renderer.program(FULL_VS, BG_FS);
       this.progShadow = renderer.program(FULL_VS, SHADOW_FS);
       this.progBoard = renderer.program(BOARD_VS, BOARD_FS);
-      this.progBlock = renderer.program(BLOCK_VS, BLOCK_FS);
+      this.progPiece = renderer.program(PIECE_VS, PIECE_FS);
       this.emptyVAO = gl.createVertexArray();
 
-      // board mesh
       const g = gridMesh(240, 160);
       this.boardVAO = gl.createVertexArray();
       gl.bindVertexArray(this.boardVAO);
@@ -394,18 +451,10 @@
       gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
       this.buffer(gl.ELEMENT_ARRAY_BUFFER, g.idx);
       this.boardCount = g.idx.length;
-
-      // piece mesh
-      const c = cubeMesh(5);
-      this.cubeVAO = gl.createVertexArray();
-      gl.bindVertexArray(this.cubeVAO);
-      this.buffer(gl.ARRAY_BUFFER, c.pos);
-      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-      this.buffer(gl.ARRAY_BUFFER, c.nrm);
-      gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
-      this.buffer(gl.ELEMENT_ARRAY_BUFFER, c.idx);
-      this.cubeCount = c.idx.length;
       gl.bindVertexArray(null);
+
+      const A = renderer.aspect;
+      this.edge = this.mesh(pieceGeometry('box', [A, 0.03, 1], 1));
 
       this.boxData = new Float32Array(MAXB * 4 * 2);
       this.texBoxes = renderer.floatTex(MAXB, 2, gl.RGBA32F, gl.RGBA);
@@ -414,15 +463,16 @@
       gl.clearColor(1, 1, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-      this.blocks = [];
-      this.ghost = null;
-      this.liftIndex = -1;
-      this.dirty = true;
+      this.growth = null;       // set by main.js
+      this.meshes = new Map();  // piece id → mesh
+      this.seenVersion = -1;
+      this.shadowT = 0;
+      this.nbox = 0;
       this.light = V.norm([-0.5, 0.9, -0.35]);
 
-      // camera: orbit around the board
-      this.cam = { yaw: 0.0, pitch: 0.92, dist: 2.0, yawT: 0.0, pitchT: 0.92, distT: 2.0 };
+      this.cam = { yaw: 0.0, pitch: 0.82, dist: 2.0, yawT: 0.35, pitchT: 0.82, distT: 1.9 };
       this.top = false;
+      this.drift = true;
     }
 
     buffer(target, data) {
@@ -432,16 +482,41 @@
       return b;
     }
 
-    setBlocks(list) { this.blocks = list; this.dirty = true; }
+    mesh(geo) {
+      const gl = this.gl, vao = gl.createVertexArray(), bufs = [];
+      gl.bindVertexArray(vao);
+      [geo.pos, geo.nrm, geo.bary, geo.cr].forEach((d, i) => {
+        bufs.push(this.buffer(gl.ARRAY_BUFFER, d));
+        gl.enableVertexAttribArray(i);
+        gl.vertexAttribPointer(i, 3, gl.FLOAT, false, 0, 0);
+      });
+      gl.bindVertexArray(null);
+      return { vao, bufs, count: geo.count };
+    }
+
+    /** keep one mesh per living piece */
+    syncMeshes() {
+      const G = this.growth;
+      if (!G || G.version === this.seenVersion) return;
+      this.seenVersion = G.version;
+      const alive = new Set(G.pieces.map((p) => p.id + ':' + p.seed));
+      for (const [k, m] of this.meshes) if (!alive.has(k)) {
+        this.gl.deleteVertexArray(m.vao); m.bufs.forEach((b) => this.gl.deleteBuffer(b)); this.meshes.delete(k);
+      }
+      for (const p of G.pieces) {
+        const k = p.id + ':' + p.seed;
+        if (!this.meshes.has(k)) this.meshes.set(k, this.mesh(pieceGeometry(p.kind, p.size, p.seed)));
+      }
+    }
 
     /* ---- camera ------------------------------------------------------------ */
     orbit(dyaw, dpitch) {
       const c = this.cam;
       this.top = false;
       c.yawT += dyaw;
-      c.pitchT = Math.max(0.18, Math.min(1.5, c.pitchT + dpitch));
+      c.pitchT = Math.max(0.12, Math.min(1.5, c.pitchT + dpitch));
     }
-    zoom(f) { const c = this.cam; c.distT = Math.max(0.8, Math.min(3.6, c.distT * f)); }
+    zoom(f) { const c = this.cam; c.distT = Math.max(0.6, Math.min(3.6, c.distT * f)); }
     toggleTop() {
       const c = this.cam;
       this.top = !this.top;
@@ -451,11 +526,12 @@
 
     updateCamera(dt, aspectView) {
       const c = this.cam, k = 1 - Math.exp(-dt * 7);
+      // left alone, it turns very slowly around its body
+      if (!this.top && this.drift) c.yawT += dt * 0.012;
       c.yaw += (c.yawT - c.yaw) * k; c.pitch += (c.pitchT - c.pitch) * k; c.dist += (c.distT - c.dist) * k;
-      // the narrow screen: back off so the whole board stays in view
       const fit = Math.max(1, 1.25 / Math.max(0.4, aspectView));
       const d = c.dist * fit;
-      const target = [0, 0.03, 0];
+      const target = [0, 0.05, 0];
       const eye = [target[0] + d * Math.sin(c.yaw) * Math.cos(c.pitch), target[1] + d * Math.sin(c.pitch), target[2] + d * Math.cos(c.yaw) * Math.cos(c.pitch)];
       this.fov = 0.62;
       this.eye = eye;
@@ -468,7 +544,6 @@
       this.aspectView = aspectView;
     }
 
-    /** A ray from the camera through a point on the canvas (client coords). */
     ray(clientX, clientY, rect) {
       const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
       const ny = 1 - ((clientY - rect.top) / rect.height) * 2;
@@ -477,45 +552,31 @@
       return { o: this.eye.slice(), d: dir };
     }
 
-    /** What lies under the pointer: a piece (with the face normal) or the board. */
+    /** the point on the board under the pointer (pieces are seen through) */
     pick(clientX, clientY, rect) {
       if (!this.eye) return null;
       const { o, d } = this.ray(clientX, clientY, rect);
-      let best = null;
-      this.blocks.forEach((b, i) => {
-        let tN = -Infinity, tF = Infinity, axis = 0, sign = 1;
-        for (let k = 0; k < 3; k++) {
-          const lo = b.c[k] - b.h[k], hi = b.c[k] + b.h[k];
-          if (Math.abs(d[k]) < 1e-9) { if (o[k] < lo || o[k] > hi) { tN = Infinity; break; } continue; }
-          let t1 = (lo - o[k]) / d[k], t2 = (hi - o[k]) / d[k], s = -1;
-          if (t1 > t2) { const tt = t1; t1 = t2; t2 = tt; s = 1; }
-          if (t1 > tN) { tN = t1; axis = k; sign = s; }
-          tF = Math.min(tF, t2);
-        }
-        if (tN < tF && tN > 0 && (!best || tN < best.t)) {
-          const n = [0, 0, 0]; n[axis] = sign;
-          best = { kind: 'block', index: i, t: tN, point: V.add(o, V.mul(d, tN)), normal: n };
-        }
-      });
-      if (d[1] < 0) {
-        const t = -o[1] / d[1];
-        const p = V.add(o, V.mul(d, t));
-        const A = this.r.aspect;
-        const onBoard = Math.abs(p[0]) <= A / 2 && Math.abs(p[2]) <= 0.5;
-        if (onBoard && (!best || t < best.t)) best = { kind: 'board', t, point: p, normal: [0, 1, 0] };
-      }
-      return best;
+      if (d[1] >= 0) return null;
+      const t = -o[1] / d[1];
+      const p = V.add(o, V.mul(d, t));
+      const A = this.r.aspect;
+      if (Math.abs(p[0]) > A / 2 || Math.abs(p[2]) > 0.5) return null;
+      return { point: p };
     }
 
     /* ---- drawing ---------------------------------------------------------------- */
     uploadBoxes() {
-      const gl = this.gl, n = Math.min(MAXB, this.blocks.length);
-      for (let i = 0; i < n; i++) {
-        const b = this.blocks[i];
-        // row 0 = centers, row 1 = halves
-        this.boxData[i * 4] = b.c[0]; this.boxData[i * 4 + 1] = b.c[1]; this.boxData[i * 4 + 2] = b.c[2]; this.boxData[i * 4 + 3] = b.seed;
-        const r1 = MAXB * 4 + i * 4;
-        this.boxData[r1] = b.h[0]; this.boxData[r1 + 1] = b.h[1]; this.boxData[r1 + 2] = b.h[2]; this.boxData[r1 + 3] = 0;
+      const gl = this.gl, list = this.growth ? this.growth.pieces : [];
+      let n = 0;
+      for (const p of list) {
+        if (n >= MAXB) break;
+        if (p.g < 0.03) continue;
+        const b = this.growth.bounds(p);
+        this.boxData[n * 4] = (b.x0 + b.x1) / 2; this.boxData[n * 4 + 1] = (b.y0 + b.y1) / 2; this.boxData[n * 4 + 2] = (b.z0 + b.z1) / 2; this.boxData[n * 4 + 3] = 0;
+        const r1 = MAXB * 4 + n * 4;
+        this.boxData[r1] = (b.x1 - b.x0) / 2; this.boxData[r1 + 1] = (b.y1 - b.y0) / 2 * 0.95; this.boxData[r1 + 2] = (b.z1 - b.z0) / 2; this.boxData[r1 + 3] = 0;
+        p._box = n;
+        n++;
       }
       gl.bindTexture(gl.TEXTURE_2D, this.texBoxes);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MAXB, 2, gl.RGBA, gl.FLOAT, this.boxData);
@@ -533,12 +594,16 @@
 
     draw(time, dt, harmony) {
       const gl = this.gl, r = this.r, c = r.colors;
-      // ease the dropped pieces down (display only)
-      let moving = false;
-      for (const b of this.blocks) if (b.drop > 0) { b.drop = Math.max(0, b.drop - (dt || 0.016) * 5); moving = true; }
-      if (this.dirty) {
+      this.syncMeshes();
+      const pieces = this.growth ? this.growth.pieces : [];
+      // the body moves while it grows: shadows follow at ~8 Hz
+      this.shadowT -= dt || 0.016;
+      const growing = pieces.some((p) => p.g > 0.001 && p.g < 0.999) || this._lastCount !== pieces.length;
+      if (this.shadowT <= 0 && (growing || this._wasGrowing)) {
+        this._wasGrowing = growing;
+        this._lastCount = pieces.length;
+        this.shadowT = 0.12;
         this.uploadBoxes();
-        // soft shadows of the pieces (cached: only when the construction changes)
         gl.bindVertexArray(this.emptyVAO);
         gl.disable(gl.DEPTH_TEST);
         gl.useProgram(this.progShadow.p);
@@ -546,7 +611,6 @@
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadow.fb);
         gl.viewport(0, 0, SHADOW_W, SHADOW_H);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
-        this.dirty = false;
       }
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -554,7 +618,6 @@
       this.updateCamera(dt || 0.016, r.canvas.width / r.canvas.height);
       const fog = [c.paperDeep[0] * 0.5, c.paperDeep[1] * 0.5, c.paperDeep[2] * 0.5];
 
-      // background
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.BLEND);
       gl.bindVertexArray(this.emptyVAO);
@@ -581,8 +644,8 @@
       gl.bindVertexArray(this.boardVAO);
       gl.drawElements(gl.TRIANGLES, this.boardCount, gl.UNSIGNED_INT, 0);
 
-      // pieces
-      P = this.progBlock; u = P.u;
+      // the board's edge and the pieces
+      P = this.progPiece; u = P.u;
       gl.useProgram(P.p);
       this.bindScene(P, time);
       gl.uniformMatrix4fv(u.u_viewProj, false, this.viewProj);
@@ -590,62 +653,55 @@
       gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, r.texWill); gl.uniform1i(u.u_will, 4);
       const R = RUIN.will.rect(r.aspect);
       gl.uniform4f(u.u_gridRect, R.x0, R.y0, R.x1, R.y1);
-      for (const k of ['paper', 'paperDeep', 'cream', 'ink', 'inkEdge', 'tissue', 'signal', 'washA']) gl.uniform3fv(u['u_' + k], c[k]);
+      for (const k of ['paperDeep', 'cream', 'ink', 'inkEdge', 'signal', 'washA', 'washB', 'tissue']) gl.uniform3fv(u['u_' + k], c[k]);
       gl.uniform3fv(u.u_fog, fog);
       gl.uniform3fv(u.u_eye, this.eye);
-      gl.bindVertexArray(this.cubeVAO);
 
-      // the board's edge
-      const A = r.aspect;
-      this.drawBox(u, [0, -0.0305, 0], [A / 2, 0.03, 0.5], { mode: 2, seed: 0.3, wobble: 0 });
+      this.drawMesh(u, this.edge, [0, -0.0305, 0], [1, 1, 1], 0, { mode: 2 });
 
-      const now = performance.now() / 1000;
-      const W = RUIN.will, will = r.willData;
-      this.blocks.forEach((b, i) => {
-        // a rejected piece shivers: read the excess under its centre
+      const A = r.aspect, W = RUIN.will, will = r.willData;
+      for (const p of pieces) {
+        if (p.g < 0.003) continue;
+        const m = this.meshes.get(p.id + ':' + p.seed);
+        if (!m) continue;
         let shake = 0;
         if (will) {
-          const g = W.worldToGrid(b.c[0] + A / 2, b.c[2] + 0.5, A);
+          const g = W.worldToGrid(p.pos[0] + A / 2, p.pos[2] + 0.5, A);
           const ci = Math.floor(g.gx), cj = Math.floor(g.gy);
           if (ci >= 0 && cj >= 0 && ci < W.COLS && cj < W.ROWS) shake = will[(cj * W.COLS + ci) * 4 + 1] / 255;
         }
-        const lift = b.drop * b.drop * 0.08;
-        this.drawBox(u, [b.c[0], b.c[1] + lift, b.c[2]], b.h, {
-          mode: 0, seed: b.seed, self: i, shake: shake * shake,
-          grow: Math.min(1, (now - b.born) / 45),
-        });
-      });
-
-      // ghost of the next piece, or the mark on the piece about to be lifted
-      const lifted = this.blocks[this.liftIndex];
-      if (this.ghost || lifted) {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.depthMask(false);
-        if (this.ghost) this.drawBox(u, this.ghost.c, this.ghost.h, { mode: 1, seed: 1.7, valid: this.ghost.valid ? 1 : 0, wobble: 0.4 });
-        if (lifted) this.drawBox(u, lifted.c, lifted.h.map((v) => v + 0.002), { mode: 1, seed: 2.3, valid: 0, wobble: 0.4 });
-        gl.depthMask(true);
-        gl.disable(gl.BLEND);
+        // it rises out of the surface: thin at first, then filling out
+        const e = p.g, w = 0.35 + 0.65 * e;
+        this.drawMesh(u, m, p.pos, [w, Math.max(0.001, e), w], p.yaw, { seed: p.seed % 1000 / 100, g: e, shake: shake * shake, self: p._box ?? -1 });
       }
       gl.bindVertexArray(null);
-      return moving;
     }
 
-    drawBox(u, c, h, o) {
+    drawMesh(u, m, anchor, scale, yaw, o) {
       const gl = this.gl;
-      gl.uniform3f(u.u_center, c[0], c[1], c[2]);
-      gl.uniform3f(u.u_half, h[0], h[1], h[2]);
+      gl.uniform3f(u.u_anchor, anchor[0], anchor[1], anchor[2]);
+      gl.uniform3f(u.u_scale, scale[0], scale[1], scale[2]);
+      gl.uniform1f(u.u_yaw, yaw);
       gl.uniform1f(u.u_seed, o.seed || 0);
       gl.uniform1f(u.u_mode, o.mode || 0);
-      gl.uniform1f(u.u_valid, o.valid ?? 1);
-      gl.uniform1f(u.u_grow, o.grow || 0);
+      gl.uniform1f(u.u_g, o.g ?? 1);
       gl.uniform1f(u.u_shake, o.shake || 0);
-      gl.uniform1f(u.u_wobble, o.wobble ?? 1);
       gl.uniform1i(u.u_self, o.self ?? -1);
-      gl.drawElements(gl.TRIANGLES, this.cubeCount, gl.UNSIGNED_SHORT, 0);
+      gl.bindVertexArray(m.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, m.count);
     }
   }
 
+  function gridMesh(nx, ny) {
+    const uv = [], idx = [];
+    for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++) uv.push(i / nx, j / ny);
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const k = j * (nx + 1) + i;
+      idx.push(k, k + nx + 1, k + 1, k + 1, k + nx + 1, k + nx + 2);
+    }
+    return { uv: new Float32Array(uv), idx: new Uint32Array(idx) };
+  }
+
   RUIN.Scene = Scene;
-  RUIN.scene = { MAXB };
+  RUIN.scene = { MAXB, pieceGeometry };
 })((window.RUIN = window.RUIN || {}));

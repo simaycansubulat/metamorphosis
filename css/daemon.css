@@ -1,0 +1,214 @@
+/* The Ruin Daemon — the interface stays almost silent; the surface speaks. */
+
+:root {
+  --paper: #ece3d2;
+  --ink: #2a1b12;
+  --mark: rgba(58, 38, 24, 0.55);
+  --mark-faint: rgba(58, 38, 24, 0.32);
+  --font: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+/* the hidden attribute must win over any display rule below */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--mark);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+#surface {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  touch-action: none;
+  cursor: default;
+}
+
+body.is-dormant #surface { cursor: pointer; }
+body.is-idle, body.is-idle #surface { cursor: none; }
+
+/* ---- threshold ------------------------------------------------------- */
+.threshold {
+  position: fixed;
+  left: 0; right: 0; bottom: max(7vh, 40px);
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 2.4s ease;
+}
+body.is-dormant .threshold { opacity: 1; transition-delay: 1.5s; }
+
+.whisper {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  text-transform: lowercase;
+  color: var(--mark-faint);
+  animation: breathe 6s ease-in-out infinite;
+}
+@keyframes breathe { 50% { opacity: 0.35; } }
+
+/* ---- instrument marks -------------------------------------------------- */
+.instrument {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.6s ease;
+}
+body.is-session .instrument { opacity: 1; }
+body.is-session.is-idle .instrument,
+body.is-bare .instrument { opacity: 0; }
+
+.mark {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  font-variant-numeric: tabular-nums;
+}
+.mark--state { top: 22px; left: 24px; }
+.mark--controls { bottom: 20px; right: 20px; pointer-events: auto; }
+
+.phase {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--mark);
+  border: 1px solid var(--mark);
+  transition: background 1.2s ease, transform 1.2s ease;
+}
+.phase.is-listening { background: transparent; transform: scale(1.35); }
+
+.mark button {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 6px 4px;
+  font: inherit;
+  letter-spacing: inherit;
+  color: var(--mark-faint);
+  cursor: pointer;
+  transition: color 0.4s ease;
+}
+.mark button:hover, .mark button:focus-visible { color: var(--ink); outline: none; }
+.mark button[aria-pressed="true"] { color: var(--ink); }
+
+/* ---- construction site (secondary, top-down) ------------------------------ */
+.site {
+  position: fixed;
+  left: 20px; bottom: 18px;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px;
+  background: rgba(236, 227, 210, 0.5);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 1.6s ease;
+}
+body.is-session .site { opacity: 0.85; pointer-events: auto; }
+body.is-session.is-idle .site { opacity: 0.35; }
+body.is-session .site:hover, body.is-session .site:focus-within { opacity: 1; }
+body.is-bare .site { opacity: 0; pointer-events: none; }
+
+.site__grid {
+  display: grid;
+  grid-template-columns: repeat(var(--cols), 22px);
+  grid-template-rows: repeat(var(--rows), 22px);
+  gap: 2px;
+}
+.site__cell {
+  --h: 0;
+  position: relative;
+  appearance: none;
+  margin: 0; padding: 0;
+  border: 1px solid var(--mark-faint);
+  background: transparent;
+  cursor: crosshair;
+  font: inherit;
+  color: var(--paper);
+}
+.site__cell:hover, .site__cell:focus-visible { border-color: var(--ink); outline: none; }
+.site__cell .stack {
+  position: absolute;
+  /* seen from above: a piece fills the cell; taller stacks read darker */
+  inset: 3px;
+  background: var(--ink);
+  opacity: calc(0.28 + var(--h) * 0.72);
+  transform: scale(calc(var(--h) > 0 ? 1 : 0));
+  display: grid; place-items: center;
+  font-size: 9px; letter-spacing: 0;
+  transition: opacity 0.25s ease;
+}
+.site__cell[data-h="0"] .stack { display: none; }
+.site__cell.is-touched .stack { animation: settle 0.35s ease-out; }
+@keyframes settle { from { transform: scale(0.6); } to { transform: scale(1); } }
+.site.is-lifting .site__cell { cursor: not-allowed; border-style: dashed; }
+
+.site__bar { display: flex; align-items: center; gap: 10px; color: var(--mark-faint); }
+.site__count { flex: 1; font-variant-numeric: tabular-nums; }
+.site__bar button {
+  appearance: none; background: none; border: 0; padding: 4px 2px;
+  font: inherit; letter-spacing: inherit; color: var(--mark-faint); cursor: pointer;
+}
+.site__bar button:hover, .site__bar button:focus-visible, .site__bar button[aria-pressed="true"] { color: var(--ink); outline: none; }
+.site__clear.is-armed { color: var(--ink); }
+
+#volume {
+  width: 64px;
+  accent-color: var(--ink);
+  opacity: 0.55;
+  cursor: pointer;
+}
+#volume:hover, #volume:focus-visible { opacity: 1; }
+
+/* ---- observer's notes ------------------------------------------------------ */
+.notes {
+  position: fixed;
+  top: 54px; left: 24px;
+  margin: 0;
+  max-width: min(360px, calc(100vw - 48px));
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+  font-size: 10.5px;
+  line-height: 1.6;
+  letter-spacing: 0.04em;
+  color: var(--mark);
+  background: rgba(236, 227, 210, 0.72);
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+
+.fallback {
+  position: fixed; inset: 0;
+  display: grid; place-items: center; align-content: center; gap: 12px;
+  text-align: center;
+  font-size: 12px; letter-spacing: 0.12em; line-height: 2;
+}
+
+@media (max-width: 520px) {
+  .mark--state { top: 16px; left: 16px; gap: 10px; }
+  .site { left: 10px; bottom: 52px; padding: 6px; }
+  .site__grid { grid-template-columns: repeat(var(--cols), 18px); grid-template-rows: repeat(var(--rows), 18px); }
+  #volume { width: 44px; }
+  .mark--controls { bottom: 12px; right: 12px; gap: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .whisper { animation: none; }
+}

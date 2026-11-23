@@ -22,7 +22,7 @@
   'use strict';
 
   const MAXB = 160;
-  const SHADOW_W = 576, SHADOW_H = 384;
+  const SMAP = 2048;
   const RELIEF = 0.006;
 
   /* ------------------------------------------------------------ math */
@@ -42,6 +42,9 @@
     const z = V.norm(V.sub(eye, target)), x = V.norm(V.cross(up, z)), y = V.cross(z, x);
     return new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -V.dot(x, eye), -V.dot(y, eye), -V.dot(z, eye), 1]);
   }
+  function ortho(l, r, b, t, n, f) {
+    return new Float32Array([2 / (r - l), 0, 0, 0, 0, 2 / (t - b), 0, 0, 0, 0, -2 / (f - n), 0, -(r + l) / (r - l), -(t + b) / (t - b), -(f + n) / (f - n), 1]);
+  }
   function mat4mul(a, b) {
     const o = new Float32Array(16);
     for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
@@ -57,10 +60,11 @@
   precision highp float;
   precision highp int;
   precision highp sampler2D;
+  precision highp sampler2DShadow;
   `;
 
   const SCENE = `
-  uniform sampler2D u_boxes;   // MAXB x 2 : (center.xyz, seed) (half.xyz, -)
+  uniform sampler2D u_boxes;   // MAXB x 2 : (x, bottom, z, yaw) (half x, height, half z, -)
   uniform int   u_nbox;
   uniform vec3  u_light;
   uniform float u_time;
@@ -72,32 +76,36 @@
     return mix(mix(mix(hash13(i), hash13(i + vec3(1, 0, 0)), f.x), mix(hash13(i + vec3(0, 1, 0)), hash13(i + vec3(1, 1, 0)), f.x), f.y),
                mix(mix(hash13(i + vec3(0, 0, 1)), hash13(i + vec3(1, 0, 1)), f.x), mix(hash13(i + vec3(0, 1, 1)), hash13(i + vec3(1, 1, 1)), f.x), f.y), f.z);
   }
-  float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0); }
-  float sceneSDF(vec3 p) {
-    float d = 1e5;
-    for (int i = 0; i < ${MAXB}; i++) {
-      if (i >= u_nbox) break;
-      vec4 c = texelFetch(u_boxes, ivec2(i, 0), 0);
-      vec4 h = texelFetch(u_boxes, ivec2(i, 1), 0);
-      d = min(d, sdBox(p - c.xyz, h.xyz));
+  // a real shadow map, cast by the pieces' own meshes; softened with a
+  // rotated poisson disc so its edge breathes like soot, not like a stencil
+  uniform highp sampler2DShadow u_smap;
+  uniform mat4 u_lightVP;
+  float shadowAt(vec3 wp, float bias, float radius) {
+    vec4 lp = u_lightVP * vec4(wp, 1.0);
+    vec3 c = lp.xyz / lp.w * 0.5 + 0.5;
+    if (c.x < 0.0 || c.y < 0.0 || c.x > 1.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
+    float a = 6.2831 * hash12(wp.xz * 913.0 + wp.y * 71.0);
+    mat2 R = mat2(cos(a), sin(a), -sin(a), cos(a));
+    float s = 0.0;
+    for (int i = 0; i < 12; i++) {
+      float r = sqrt((float(i) + 0.5) / 12.0);
+      float th = float(i) * 2.39996;
+      vec2 o = R * vec2(cos(th), sin(th)) * r * radius / 2048.0;
+      s += texture(u_smap, vec3(c.xy + o, c.z - bias));
     }
-    return d;
+    return s / 12.0;
   }
-  // a ray toward the light: is any other piece in the way?
-  float rayShadow(vec3 ro, vec3 rd, int self) {
-    float lit = 1.0;
-    for (int i = 0; i < ${MAXB}; i++) {
-      if (i >= u_nbox) break;
-      if (i == self) continue;
-      vec4 c = texelFetch(u_boxes, ivec2(i, 0), 0);
-      vec4 h = texelFetch(u_boxes, ivec2(i, 1), 0);
-      vec3 m = 1.0 / rd;
-      vec3 t1 = (c.xyz - h.xyz - ro) * m, t2 = (c.xyz + h.xyz - ro) * m;
-      vec3 tn = min(t1, t2), tf = max(t1, t2);
-      float tN = max(max(tn.x, tn.y), tn.z), tF = min(min(tf.x, tf.y), tf.z);
-      if (tF > 0.0 && tN < tF && tN > 0.0005) lit = min(lit, 0.0);
-    }
-    return lit;
+  // distance to a piece's footprint, in its own turned frame, with rounded corners
+  float footDist(vec2 p, int i, out float h, out float y0) {
+    vec4 c = texelFetch(u_boxes, ivec2(i, 0), 0);
+    vec4 e = texelFetch(u_boxes, ivec2(i, 1), 0);
+    vec2 d = p - c.xz;
+    float cs = cos(c.w), sn = sin(c.w);
+    vec2 q = vec2(cs * d.x - sn * d.y, sn * d.x + cs * d.y);
+    float r = min(e.x, e.z) * 0.85;
+    vec2 k = abs(q) - e.xz + r;
+    h = e.y; y0 = c.y;
+    return length(max(k, 0.0)) + min(max(k.x, k.y), 0.0) - r;
   }
   vec4 voronoi(vec2 x, float t) {
     vec2 n = floor(x), fr = fract(x);
@@ -126,28 +134,8 @@
     gl_Position = vec4(p, 0.999, 1.0);
   }`;
 
-  /* soft shadows + ambient occlusion of the pieces on the board (cached) */
-  const SHADOW_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
-  in vec2 v_uv;
-  out vec4 outColor;
-  void main() {
-    vec3 p = vec3(v_uv.x * u_aspect - 0.5 * u_aspect, 0.0, 0.5 - v_uv.y);
-    float res = 1.0, t = 0.004;
-    for (int i = 0; i < 32; i++) {
-      float h = sceneSDF(p + u_light * t);
-      res = min(res, 20.0 * h / t);
-      t += clamp(h, 0.003, 0.05);
-      if (res < 0.005 || t > 1.4) break;
-    }
-    float occ = 0.0, sca = 1.0;
-    for (int k = 1; k <= 5; k++) {
-      float hk = 0.014 * float(k);
-      occ += (hk - sceneSDF(p + vec3(0.0, hk, 0.0))) * sca;
-      sca *= 0.75;
-    }
-    float ao = clamp(1.0 - 2.6 * occ / 0.07, 0.0, 1.0);
-    outColor = vec4(clamp(res, 0.0, 1.0), ao, 0.0, 1.0);
-  }`;
+  const DEPTH_FS = HEAD + `
+  void main() {}`;
 
   const BG_FS = HEAD + RUIN.shaders.NOISE + `
   uniform vec3 u_ground;
@@ -185,22 +173,24 @@
   }`;
 
   const BOARD_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
-  uniform sampler2D u_surface, u_shadow;
+  uniform sampler2D u_surface;
   uniform vec3 u_inkEdge, u_fog, u_eye, u_ground;
   in vec2 v_uv;
   in vec3 v_world;
   out vec4 outColor;
 
-  // how close the nearest piece is (its footprint), 0..1
-  float nearPieces(vec2 p) {
+  // how close the nearest grounded piece is (0..1), and how much it shelters the ground
+  float nearPieces(vec2 p, out float ao) {
     float near = 0.0;
+    ao = 1.0;
     for (int i = 0; i < ${MAXB}; i++) {
       if (i >= u_nbox) break;
-      vec4 c = texelFetch(u_boxes, ivec2(i, 0), 0);
-      vec4 h = texelFetch(u_boxes, ivec2(i, 1), 0);
-      vec2 q = max(abs(p - c.xz) - h.xz, 0.0);
-      float reach = 0.07 + 0.55 * h.y;             // taller pieces send their veins further
-      near = max(near, exp(-length(q) / reach));
+      float h, y0;
+      float d = max(footDist(p, i, h, y0), 0.0);
+      float w = exp(-y0 / 0.03);                    // pieces resting on others root less
+      float reach = 0.08 + 0.5 * h;                 // taller pieces send their veins further
+      near = max(near, w * exp(-d / reach));
+      ao = min(ao, 1.0 - 0.6 * w * exp(-d / 0.014));
     }
     return near;
   }
@@ -209,7 +199,8 @@
     vec4 s = texture(u_surface, v_uv);
     // a calm, clean ground; the field only shows as a few veins where pieces are born
     vec3 col = u_ground;
-    float near = nearPieces(v_world.xz);
+    float ao;
+    float near = nearPieces(v_world.xz, ao);
     // an organic, ragged border: the field spreads out from the pieces like a stain
     float edgeN = fbm(v_uv * 7.0 + 2.0) * 0.5 + 0.5 + 0.25 * snoise(v_uv * 40.0);
     float field = smoothstep(0.18, 0.5, near * (0.7 + 0.6 * edgeN));
@@ -229,12 +220,12 @@
     col *= 1.0 + (dot(n, u_light) - u_light.y) * 1.8 * show;
 
     // the pieces' shadows bleed into the linen like soot
-    vec2 wq = v_uv + 0.0035 * vec2(snoise(v_uv * 46.0), snoise(v_uv * 46.0 + 7.3));
-    vec2 sh = texture(u_shadow, wq).rg;
+    vec3 gp = vec3(v_world.x, 0.0, v_world.z) + 0.0035 * vec3(snoise(v_uv * 46.0), 0.0, snoise(v_uv * 46.0 + 7.3));
+    float lit = shadowAt(gp, 0.0015, 2.5 + 2.0 * (fbm(v_uv * 12.0) * 0.5 + 0.5));
     float soot = 0.85 + 0.3 * fbm(v_uv * 22.0 + 3.0);
-    float dark = (1.0 - sh.r) * 0.6 * soot + (1.0 - sh.g) * 0.6;
+    float dark = (1.0 - lit) * 0.55 * soot + (1.0 - ao) * 0.7;
     float hair = smoothstep(0.35, 0.9, snoise(v_uv * vec2(30.0, 380.0)));
-    dark += (1.0 - sh.r) * hair * 0.06;
+    dark += (1.0 - lit) * hair * 0.06;
     col *= mix(vec3(1.0), u_inkEdge * 1.2, clamp(dark, 0.0, 0.82));
 
     // no edge, no slab: the ground simply continues
@@ -352,8 +343,7 @@
     col = mix(col, mix(u_cream, u_washA, 0.35), harmony * 0.14);
 
     // --- light: crisp facets, other pieces cast shadows -----------------------------------
-    vec3 ro = wp + n * 0.0015;
-    float sh = ndl > 0.0 ? rayShadow(ro, u_light, u_self) : 0.0;
+    float sh = ndl > 0.0 ? shadowAt(wp + n * 0.002, 0.0012, 1.4) : 0.0;
     float lit = 0.5 + 0.55 * max(ndl, 0.0) * sh + 0.08 * n.y;
     lit *= 0.75 + 0.25 * smoothstep(0.0, 0.03, wp.y);
     col *= lit;
@@ -374,6 +364,7 @@
     shard: (r) => ({ top: r.float(0.04, 0.18), tp: 1.1, tip: 0.25, bend: r.float(-0.2, 0.2), bulge: 0.12, jit: 0.14, corner: r.float(0.2, 0.4), f: 20 }),
     slab:  (r) => ({ top: r.float(0.8, 0.95), tp: 1, tip: 0.02, bend: 0, bulge: 0.1, jit: 0.1, corner: r.float(0.25, 0.45), f: 16, sag: r.float(-0.25, 0.25) }),
     knot:  (r) => ({ top: r.float(0.45, 0.75), tp: 1.2, tip: 0.08, bend: r.float(-0.1, 0.1), bulge: 0.28, jit: 0.16, corner: r.float(0.3, 0.5), f: 24 }),
+    beam:  (r) => ({ top: r.float(0.82, 0.97), tp: 1, tip: 0.03, bend: r.float(-0.06, 0.06), bulge: 0.09, jit: 0.07, corner: r.float(0.25, 0.45), f: 14 }),
     box:   () => ({ top: 1, tp: 1, tip: 0, bend: 0, bulge: 0, jit: 0, corner: 0, f: 1 }),
   };
 
@@ -470,7 +461,7 @@
       const gl = (this.gl = renderer.gl);
       this.progBG = renderer.program(FULL_VS, BG_FS);
       this.progVig = renderer.program(FULL_VS, VIGNETTE_FS);
-      this.progShadow = renderer.program(FULL_VS, SHADOW_FS);
+      this.progDepth = renderer.program(PIECE_VS, DEPTH_FS);
       this.progBoard = renderer.program(BOARD_VS, BOARD_FS);
       this.progPiece = renderer.program(PIECE_VS, PIECE_FS);
       this.emptyVAO = gl.createVertexArray();
@@ -487,17 +478,28 @@
 
       this.boxData = new Float32Array(MAXB * 4 * 2);
       this.texBoxes = renderer.floatTex(MAXB, 2, gl.RGBA32F, gl.RGBA);
-      this.shadow = renderer.memoryTarget(SHADOW_W, SHADOW_H);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadow.fb);
-      gl.clearColor(1, 1, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+      // the shadow map: depth seen from the light
+      this.smap = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.smap);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, SMAP, SMAP);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+      this.smapFB = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.smapFB);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, this.smap, 0);
+      gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
       this.growth = null;       // set by main.js
       this.meshes = new Map();  // piece id → mesh
       this.seenVersion = -1;
-      this.shadowT = 0;
       this.nbox = 0;
       this.light = V.norm([-0.5, 0.9, -0.35]);
+      this.lightVP = mat4mul(ortho(-1.05, 1.05, -1.05, 1.05, 0.5, 6), lookAt(V.mul(this.light, 3), [0, 0, 0], [0, 1, 0]));
 
       this.cam = { yaw: 0.0, pitch: 0.78, dist: 1.8, yawT: 0.35, pitchT: 0.78, distT: 1.5 };
       this.top = false;
@@ -600,10 +602,10 @@
       for (const p of list) {
         if (n >= MAXB) break;
         if (p.g < 0.03) continue;
-        const b = this.growth.bounds(p);
-        this.boxData[n * 4] = (b.x0 + b.x1) / 2; this.boxData[n * 4 + 1] = (b.y0 + b.y1) / 2; this.boxData[n * 4 + 2] = (b.z0 + b.z1) / 2; this.boxData[n * 4 + 3] = 0;
+        const w = 0.35 + 0.65 * p.g;
+        this.boxData[n * 4] = p.pos[0]; this.boxData[n * 4 + 1] = p.pos[1]; this.boxData[n * 4 + 2] = p.pos[2]; this.boxData[n * 4 + 3] = p.yaw;
         const r1 = MAXB * 4 + n * 4;
-        this.boxData[r1] = (b.x1 - b.x0) / 2; this.boxData[r1 + 1] = (b.y1 - b.y0) / 2 * 0.95; this.boxData[r1 + 2] = (b.z1 - b.z0) / 2; this.boxData[r1 + 3] = 0;
+        this.boxData[r1] = p.size[0] * 0.5 * w; this.boxData[r1 + 1] = p.size[1] * p.g; this.boxData[r1 + 2] = p.size[2] * 0.5 * w; this.boxData[r1 + 3] = 0;
         p._box = n;
         n++;
       }
@@ -619,28 +621,35 @@
       gl.uniform3fv(u.u_light, this.light);
       gl.uniform1f(u.u_time, time);
       gl.uniform1f(u.u_aspect, this.r.aspect);
+      gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, this.smap); gl.uniform1i(u.u_smap, 7);
+      gl.uniformMatrix4fv(u.u_lightVP, false, this.lightVP);
     }
 
     draw(time, dt, harmony) {
       const gl = this.gl, r = this.r, c = r.colors;
       this.syncMeshes();
       const pieces = this.growth ? this.growth.pieces : [];
-      // the body moves while it grows: shadows follow at ~8 Hz
-      this.shadowT -= dt || 0.016;
-      const growing = pieces.some((p) => p.g > 0.001 && p.g < 0.999) || this._lastCount !== pieces.length;
-      if (this.shadowT <= 0 && (growing || this._wasGrowing)) {
-        this._wasGrowing = growing;
-        this._lastCount = pieces.length;
-        this.shadowT = 0.18;
-        this.uploadBoxes();
-        gl.bindVertexArray(this.emptyVAO);
-        gl.disable(gl.DEPTH_TEST);
-        gl.useProgram(this.progShadow.p);
-        this.bindScene(this.progShadow, time);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadow.fb);
-        gl.viewport(0, 0, SHADOW_W, SHADOW_H);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      this.uploadBoxes();
+      // shadows: the pieces' meshes, seen from the light (every frame: they grow)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.smapFB);
+      gl.viewport(0, 0, SMAP, SMAP);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      gl.polygonOffset(1.5, 3);
+      gl.useProgram(this.progDepth.p);
+      const ud = this.progDepth.u;
+      gl.uniformMatrix4fv(ud.u_viewProj, false, this.lightVP);
+      gl.uniform1f(ud.u_time, time);
+      for (const p of pieces) {
+        if (p.g < 0.003) continue;
+        const m = this.meshes.get(p.id + ':' + p.seed);
+        if (!m) continue;
+        const e = p.g, w = 0.35 + 0.65 * e;
+        this.drawMesh(ud, m, p.pos, [w, Math.max(0.001, e), w], p.yaw, { seed: p.seed % 1000 / 100 });
       }
+      gl.disable(gl.POLYGON_OFFSET_FILL);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, r.canvas.width, r.canvas.height);
@@ -665,7 +674,6 @@
       this.bindScene(P, time);
       gl.uniformMatrix4fv(u.u_viewProj, false, this.viewProj);
       gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, r.surface.tex); gl.uniform1i(u.u_surface, 5);
-      gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, this.shadow.tex); gl.uniform1i(u.u_shadow, 7);
       gl.uniform3fv(u.u_inkEdge, c.inkEdge);
       gl.uniform3fv(u.u_ground, ground);
       gl.uniform3fv(u.u_eye, this.eye);

@@ -14,6 +14,11 @@
  *
  * Every voice takes `sharp` (0..1): sharper → harder attack, brighter
  * filter, shorter body. The sonifier derives it from the will's insistence.
+ *
+ * HARSH (0..1, default 0.8) roughens everything: every voice is pushed
+ * sharper, and the master runs through a gritty, slightly asymmetric
+ * saturation with a coarse quantiser and a hard presence boost, so even
+ * soft events scrape.
  * ------------------------------------------------------------------------- */
 (function (RUIN) {
   'use strict';
@@ -25,7 +30,11 @@
       this.ctx = null;
       this.enabled = true;
       this.level = 0.75;   // user volume 0..1
+      this.harsh = 0.8;    // grit of the whole voice 0..1
     }
+
+    /** every voice is pushed toward hard, bright, short */
+    edge(sharp) { return clamp(sharp + (1 - sharp) * 0.6 * this.harsh, 0, 1); }
 
     get ready() { return !!this.ctx && this.ctx.state === 'running' && this.enabled; }
     get now() { return this.ctx ? this.ctx.currentTime : 0; }
@@ -58,10 +67,27 @@
       this.master = ctx.createGain();
       this.master.gain.value = this.enabled ? this.level * this.level : 0;
       const comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -14; comp.ratio.value = 5; comp.attack.value = 0.002; comp.release.value = 0.12;
+      comp.threshold.value = -18; comp.ratio.value = 8; comp.attack.value = 0.001; comp.release.value = 0.08;
       const hp = ctx.createBiquadFilter();
-      hp.type = 'highpass'; hp.frequency.value = 28;
-      this.master.connect(hp); hp.connect(comp); comp.connect(ctx.destination);
+      hp.type = 'highpass'; hp.frequency.value = 45;
+      // grit: drive into an asymmetric saturator with a coarse quantiser
+      const drive = ctx.createGain(); drive.gain.value = 1 + 5 * this.harsh;
+      const shaper = ctx.createWaveShaper();
+      const N = 4096, curve = new Float32Array(N), k = 4 + 18 * this.harsh, steps = 40 - 26 * this.harsh;
+      for (let i = 0; i < N; i++) {
+        const x = (i / (N - 1)) * 2 - 1;
+        let y = ((1 + k) * x) / (1 + k * Math.abs(x));
+        y += 0.12 * this.harsh * x * x;                       // asymmetry → rasp
+        curve[i] = Math.round(y * steps) / steps;              // crushed, splintered tails
+      }
+      shaper.curve = curve; shaper.oversample = '2x';
+      const presence = ctx.createBiquadFilter();
+      presence.type = 'peaking'; presence.frequency.value = 3800; presence.Q.value = 0.9; presence.gain.value = 9 * this.harsh;
+      const air = ctx.createBiquadFilter();
+      air.type = 'highshelf'; air.frequency.value = 6000; air.gain.value = 5 * this.harsh;
+      const trim = ctx.createGain(); trim.gain.value = 0.55;
+      this.master.connect(hp); hp.connect(drive); drive.connect(shaper); shaper.connect(presence);
+      presence.connect(air); air.connect(trim); trim.connect(comp); comp.connect(ctx.destination);
 
       // one short noise buffer, reused by every voice
       const len = Math.floor(ctx.sampleRate * 0.5);
@@ -97,6 +123,7 @@
     /* ---- voices ---------------------------------------------------------- */
     click(t, { freq = 3200, gain = 0.2, pan = 0, sharp = 0.5 } = {}) {
       if (!this.ready) return;
+      sharp = this.edge(sharp);
       const dur = 0.004 + 0.012 * (1 - sharp);
       const n = this.noiseSrc(t, dur + 0.01);
       const f = this.bp(freq * (0.8 + 0.6 * sharp), 1.5 + 4 * sharp);
@@ -106,6 +133,7 @@
 
     tap(t, { freq = 2400, gain = 0.15, pan = 0, sharp = 0.5 } = {}) {
       if (!this.ready) return;
+      sharp = this.edge(sharp);
       const dec = 0.012 + 0.03 * (1 - sharp);
       const g = this.vca(t, gain, 0.0005, dec);
       for (const [m, a] of [[1, 1], [2.76, 0.5]]) {
@@ -122,6 +150,7 @@
 
     knock(t, { freq = 320, gain = 0.3, pan = 0, sharp = 0.4, hollow = 0.5 } = {}) {
       if (!this.ready) return;
+      sharp = this.edge(sharp);
       // an impulse exciting a resonant body: no pitch held long enough to be a note
       const n = this.noiseSrc(t, 0.01);
       const ex = this.vca(t, 1, 0.0005, 0.004 + 0.004 * (1 - sharp));
@@ -141,6 +170,7 @@
 
     thud(t, { freq = 70, gain = 0.5, pan = 0, sharp = 0.3, decay = 0.16 } = {}) {
       if (!this.ready) return;
+      sharp = this.edge(sharp);
       const ctx = this.ctx;
       const o = ctx.createOscillator();
       o.type = 'sine';
@@ -161,6 +191,7 @@
 
     pulse(t, { freq = 160, gain = 0.25, pan = 0, len = 0.22, sharp = 0 } = {}) {
       if (!this.ready) return;
+      sharp = this.edge(sharp);
       // a soft throb: filtered noise and a low partial swelling and receding
       const n = this.noiseSrc(t, len + 0.05);
       const f = this.lp(freq * (2 + 4 * sharp), 4);
@@ -180,6 +211,7 @@
 
     rattle(t, { n = 5, span = 0.12, gain = 0.12, pan = 0, sharp = 0.5, freq = 2600, fall = 0 } = {}) {
       if (!this.ready) return;
+      n = Math.round(n * (1 + 0.8 * this.harsh)); gain *= 1 + 0.4 * this.harsh;
       // irregular contacts, accelerating or decelerating: never an even rhythm
       let at = t;
       for (let k = 0; k < n; k++) {

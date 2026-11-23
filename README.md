@@ -38,15 +38,19 @@ moment for the participant to answer with the pieces.
 
 The surface lies on a board, and out of it the daemon grows its own pieces.
 Nobody places them. Every session unfolds a different composition from the
-seed and from the will's intention (`js/daemon/growth.js`): spires, stacks,
-crosses, twin posts, arches spanning two places, low slabs and knots. The
+seed and from the will's intention (`js/daemon/growth.js`), built the way
+the workshop's Jenga models were: elongated pieces (about 3 : 1 : 0.6)
+standing as posts and laid across as beams, in towers of criss-crossed
+tiers, frames, arches spanning two places, crosses, T-posts and low
+criss-cross piles. The
 pieces rise one after another, and the upper ones only once what carries
 them has grown. A few stray pieces grow where it does not want matter;
 they irritate and, after a while, sink back into the surface.
 
-The pieces are not blocks: each is a subdivided form that is tapered, bent,
-swollen, with its corners pulled in and every vertex knocked, so it is
-irregular, sharp-faceted and organic. The field is still painted exactly
+The pieces are not regular blocks: each is a subdivided form, slightly
+tapered, bent and swollen, its corners pulled in and every vertex knocked,
+so it is irregular, sharp-faceted and organic. Shadows are cast by the
+pieces' real shapes (a shadow map) and softened like soot. The field is still painted exactly
 as before (into a texture on the board, `js/render/scene.js`), and its
 pattern continues onto the pieces:
 
@@ -203,7 +207,8 @@ favoured gestures, tempo, a dominant axis and its coherence. Different sessions
 therefore speak different dialects of the same language.
 
 ### Sound
-Sound is made of short, dry, independent percussive events: `click`, `tap`,
+Sound is made of short, dry, harsh, independent percussive events (a
+gritty saturated master with a coarse quantiser and a hard presence boost): `click`, `tap`,
 `knock`, `thud`, `pulse` (an organic throb) and `rattle` (irregular
 contacts). It is synthesized in the browser with no samples. There are no
 melodies, held notes, loops, tempo, drone, reverb or delay. A sound happens

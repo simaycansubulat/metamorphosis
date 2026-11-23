@@ -150,18 +150,23 @@
   }`;
 
   const BG_FS = HEAD + RUIN.shaders.NOISE + `
-  uniform vec3 u_paper, u_paperDeep;
+  uniform vec3 u_ground;
+  in vec2 v_uv;
+  out vec4 outColor;
+  void main() {
+    outColor = vec4(u_ground, 1.0);
+  }`;
+
+  /* over everything: a soft falloff and paper grain (multiplied) */
+  const VIGNETTE_FS = HEAD + RUIN.shaders.NOISE + `
   uniform float u_harmony;
   in vec2 v_uv;
   out vec4 outColor;
   void main() {
-    vec3 lo = u_paperDeep * 0.40, hi = mix(u_paperDeep, u_paper, 0.4) * 0.66;
-    vec3 col = mix(lo, hi, smoothstep(-0.1, 1.1, v_uv.y));
-    col *= 0.93 + 0.1 * (fbm(v_uv * vec2(2.5, 1.5) + 4.0) * 0.5 + 0.5);
     vec2 vc = v_uv - 0.5;
-    col *= 1.0 - (0.45 - 0.1 * u_harmony) * dot(vc, vc) * 1.6;
-    col *= 0.97 + 0.06 * hash12(floor(gl_FragCoord.xy));
-    outColor = vec4(col, 1.0);
+    float v = 1.0 - (0.42 - 0.1 * u_harmony) * pow(dot(vc, vc) * 1.8, 1.2);
+    v *= 0.975 + 0.05 * hash12(floor(gl_FragCoord.xy));
+    outColor = vec4(vec3(v), 1.0);
   }`;
 
   /* the board: the field itself, a little raised where there is matter */
@@ -181,13 +186,34 @@
 
   const BOARD_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
   uniform sampler2D u_surface, u_shadow;
-  uniform vec3 u_inkEdge, u_fog, u_eye;
+  uniform vec3 u_inkEdge, u_fog, u_eye, u_ground;
   in vec2 v_uv;
   in vec3 v_world;
   out vec4 outColor;
+
+  // how close the nearest piece is (its footprint), 0..1
+  float nearPieces(vec2 p) {
+    float near = 0.0;
+    for (int i = 0; i < ${MAXB}; i++) {
+      if (i >= u_nbox) break;
+      vec4 c = texelFetch(u_boxes, ivec2(i, 0), 0);
+      vec4 h = texelFetch(u_boxes, ivec2(i, 1), 0);
+      vec2 q = max(abs(p - c.xz) - h.xz, 0.0);
+      float reach = 0.05 + 0.5 * h.y;              // taller pieces send their veins further
+      near = max(near, exp(-length(q) / reach));
+    }
+    return near;
+  }
+
   void main() {
     vec4 s = texture(u_surface, v_uv);
-    vec3 col = s.rgb;
+    // a calm, clean ground; the field only shows as a few veins where pieces are born
+    vec3 col = u_ground;
+    float near = nearPieces(v_world.xz);
+    near *= 0.75 + 0.5 * (fbm(v_uv * 9.0 + 2.0) * 0.5 + 0.5);
+    float vein = s.a * smoothstep(0.08, 0.6, near);
+    col = mix(col, s.rgb, clamp(vein * 1.15, 0.0, 1.0));
+    col = mix(col, s.rgb, smoothstep(0.75, 1.0, near) * 0.25);   // a faint bloom at the foot
 
     // relief lighting from the matter channel
     vec2 tx = 1.0 / vec2(textureSize(u_surface, 0));
@@ -197,7 +223,7 @@
     float hU = textureLod(u_surface, v_uv + vec2(0.0, tx.y * 1.5), 0.7).a;
     float k = ${RELIEF} * 2.2;
     vec3 n = normalize(vec3(-(hR - hL) * k / (3.0 * tx.x * u_aspect), 1.0, (hU - hD) * k / (3.0 * tx.y)));
-    col *= 1.0 + (dot(n, u_light) - u_light.y) * 1.8;
+    col *= 1.0 + min(0.0, dot(n, u_light) - u_light.y) * 0.9 * smoothstep(0.08, 0.6, near);
 
     // the pieces' shadows bleed into the linen like soot
     vec2 wq = v_uv + 0.0035 * vec2(snoise(v_uv * 46.0), snoise(v_uv * 46.0 + 7.3));
@@ -208,8 +234,9 @@
     dark += (1.0 - sh.r) * hair * 0.06;
     col *= mix(vec3(1.0), u_inkEdge * 1.2, clamp(dark, 0.0, 0.82));
 
-    float fd = distance(v_world, u_eye);
-    col = mix(col, u_fog, smoothstep(1.6, 4.5, fd) * 0.45);
+    // no edge, no slab: the ground simply continues
+    vec2 ed = min(v_uv, 1.0 - v_uv) * vec2(u_aspect, 1.0);
+    col = mix(u_ground, col, smoothstep(0.0, 0.1, min(ed.x, ed.y)));
     outColor = vec4(col, 1.0);
   }`;
 
@@ -439,6 +466,7 @@
       this.r = renderer;
       const gl = (this.gl = renderer.gl);
       this.progBG = renderer.program(FULL_VS, BG_FS);
+      this.progVig = renderer.program(FULL_VS, VIGNETTE_FS);
       this.progShadow = renderer.program(FULL_VS, SHADOW_FS);
       this.progBoard = renderer.program(BOARD_VS, BOARD_FS);
       this.progPiece = renderer.program(PIECE_VS, PIECE_FS);
@@ -453,8 +481,6 @@
       this.boardCount = g.idx.length;
       gl.bindVertexArray(null);
 
-      const A = renderer.aspect;
-      this.edge = this.mesh(pieceGeometry('box', [A, 0.03, 1], 1));
 
       this.boxData = new Float32Array(MAXB * 4 * 2);
       this.texBoxes = renderer.floatTex(MAXB, 2, gl.RGBA32F, gl.RGBA);
@@ -616,15 +642,14 @@
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, r.canvas.width, r.canvas.height);
       this.updateCamera(dt || 0.016, r.canvas.width / r.canvas.height);
-      const fog = [c.paperDeep[0] * 0.5, c.paperDeep[1] * 0.5, c.paperDeep[2] * 0.5];
+      const ground = [0, 1, 2].map((k) => c.paper[k] * 0.78 + c.paperDeep[k] * 0.22);
+      const fog = ground;
 
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.BLEND);
       gl.bindVertexArray(this.emptyVAO);
       gl.useProgram(this.progBG.p);
-      gl.uniform3fv(this.progBG.u.u_paper, c.paper);
-      gl.uniform3fv(this.progBG.u.u_paperDeep, c.paperDeep);
-      gl.uniform1f(this.progBG.u.u_harmony, harmony);
+      gl.uniform3fv(this.progBG.u.u_ground, ground);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
       gl.enable(gl.DEPTH_TEST);
@@ -639,7 +664,7 @@
       gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, r.surface.tex); gl.uniform1i(u.u_surface, 5);
       gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, this.shadow.tex); gl.uniform1i(u.u_shadow, 7);
       gl.uniform3fv(u.u_inkEdge, c.inkEdge);
-      gl.uniform3fv(u.u_fog, fog);
+      gl.uniform3fv(u.u_ground, ground);
       gl.uniform3fv(u.u_eye, this.eye);
       gl.bindVertexArray(this.boardVAO);
       gl.drawElements(gl.TRIANGLES, this.boardCount, gl.UNSIGNED_INT, 0);
@@ -657,7 +682,6 @@
       gl.uniform3fv(u.u_fog, fog);
       gl.uniform3fv(u.u_eye, this.eye);
 
-      this.drawMesh(u, this.edge, [0, -0.0305, 0], [1, 1, 1], 0, { mode: 2 });
 
       const A = r.aspect, W = RUIN.will, will = r.willData;
       for (const p of pieces) {
@@ -674,6 +698,16 @@
         const e = p.g, w = 0.35 + 0.65 * e;
         this.drawMesh(u, m, p.pos, [w, Math.max(0.001, e), w], p.yaw, { seed: p.seed % 1000 / 100, g: e, shake: shake * shake, self: p._box ?? -1 });
       }
+
+      // soft falloff and grain over the whole view
+      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.DST_COLOR, gl.ZERO);
+      gl.bindVertexArray(this.emptyVAO);
+      gl.useProgram(this.progVig.p);
+      gl.uniform1f(this.progVig.u.u_harmony, harmony);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.disable(gl.BLEND);
       gl.bindVertexArray(null);
     }
 

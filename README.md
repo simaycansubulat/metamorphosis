@@ -53,8 +53,9 @@ pattern continues onto the pieces:
 - the ground's stains and veins are folded up the sides of each piece, and
   its cell tissue (walls thickening at junctions, nuclei) covers every facet
 - only the sharp folds are inked, with a wobbling hand-drawn line
-- shadows bleed into the linen like soot; the matter on the board is
-  slightly raised
+- the ground stays calm and clean, with no board edge; the field shows on it
+  only as a few veins and stains spreading from where pieces are born
+- shadows bleed into the ground like soot
 - freshly grown matter is pale; a piece the will reads as excess irritates
   (red scratches, a shiver); accepted ones settle, with a faint moss
 

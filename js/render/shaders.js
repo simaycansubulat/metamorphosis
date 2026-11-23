@@ -330,10 +330,9 @@
     col *= 0.97 + 0.06 * hash12(floor(gl_FragCoord.xy));
     vec2 vc = v_uv - 0.5;
     col *= 1.0 - (0.28 - 0.08 * u_harmony) * pow(dot(vc, vc) * 1.8, 1.4);
-    // alpha carries the RELIEF of the matter: the 3D board raises it slightly
-    float relief = inkA * 0.75 + sootA * 0.25 + clamp(washA, 0.0, 1.0) * 0.15
-                 + membrane * tissue * 0.3 + clamp(f.rim, 0.0, 1.0) * 0.25;
-    outColor = vec4(col, clamp(relief, 0.0, 1.0));
+    // alpha carries the INK alone (veins, dendrites, stains): the 3D ground
+    // shows only these, near the pieces, and raises them slightly
+    outColor = vec4(col, clamp(inkA + la * 0.4, 0.0, 1.0));
   }`;
 
   const MEMORY = COMMON + `

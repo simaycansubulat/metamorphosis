@@ -47,9 +47,12 @@
       const pieces = [];
       let id = 0;
       const add = (o) => {
+        // fuller, heavier pieces
+        const sz = o.size.slice();
+        if (o.kind === 'slab') { sz[0] *= 1.12; sz[2] *= 1.3; } else { sz[0] *= 1.35; sz[2] *= 1.35; }
         const p = {
-          id: id++, kind: o.kind, size: o.size, pos: o.pos, yaw: o.yaw ?? rng.float(0, Math.PI),
-          start: o.start, dur: o.dur ?? 5 + o.size[1] * 22 + rng.float(0, 3),
+          id: id++, kind: o.kind, size: sz, pos: o.pos, yaw: o.yaw ?? rng.float(0, Math.PI),
+          start: o.start, dur: o.dur ?? 3 + o.size[1] * 14 + rng.float(0, 2),
           stray: !!o.stray, seed: rng.int(1, 1e9), g: 0, boost: 0, grown: false,
         };
         if (o.stray) { p.leaveAt = p.start + p.dur + rng.float(30, 60); p.leaveDur = rng.float(6, 10); }
@@ -66,15 +69,16 @@
       const used = new Set();
       const key = (i, j) => j * W.COLS + i;
 
-      let clock = 1.5;
+      let clock = 0.4, forms = 0;
       for (const c of cells) {
         if (used.has(key(c.i, c.j))) continue;
         used.add(key(c.i, c.j));
         const [cx, cz] = cell(c.i, c.j);
         const x = jit(cx, 0.03), z = jit(cz, 0.03);
         const H = c.h * LEVEL;
-        const t0 = clock + rng.float(0, 1.5);
-        clock += rng.float(2.2, 4.5);
+        const t0 = clock + rng.float(0, 0.8);
+        clock += rng.float(0.9, 2.0);
+        forms++;
 
         // an arch toward a neighbour of similar height
         const nb = [[1, 0], [0, 1], [-1, 0], [0, -1]].map(([di, dj]) => ({ i: c.i + di, j: c.j + dj }))
@@ -137,14 +141,25 @@
         }
       }
 
+      // never too sparse: at least ten forms, the extra ones as satellites
+      // leaning beside what has already been planned
+      const grounded = pieces.filter((p) => p.pos[1] === 0);
+      while (forms < 10 && grounded.length) {
+        const host = rng.pick(grounded);
+        const a = rng.float(0, Math.PI * 2), r = rng.float(0.07, 0.12);
+        add({ kind: rng.pick(['knot', 'shard', 'shard', 'post']), size: [rng.float(0.035, 0.055), rng.float(0.05, 0.13), rng.float(0.03, 0.05)],
+          pos: [host.pos[0] + Math.cos(a) * r, 0, host.pos[2] + Math.sin(a) * r], start: rng.float(1, Math.max(2, clock)) });
+        forms++;
+      }
+
       // strays: where it does not want matter, a few pieces grow anyway
       const empty = [];
       for (let j = 0; j < W.ROWS; j++) for (let i = 0; i < W.COLS; i++) if (T[key(i, j)] < 0.5) empty.push({ i, j });
-      const ns = Math.min(empty.length, rng.int(2, 4));
+      const ns = Math.min(empty.length, rng.int(1, 3));
       for (let k = 0; k < ns; k++) {
         const e = empty.splice(rng.int(0, empty.length - 1), 1)[0];
         const [ex, ez] = cell(e.i, e.j);
-        add({ kind: rng.pick(['knot', 'shard', 'post']), size: [rng.float(0.045, 0.08), rng.float(0.06, 0.16), rng.float(0.04, 0.07)], pos: [jit(ex, 0.03), 0, jit(ez, 0.03)], start: rng.float(4, 18), stray: true });
+        add({ kind: rng.pick(['knot', 'shard', 'post']), size: [rng.float(0.045, 0.08), rng.float(0.06, 0.16), rng.float(0.04, 0.07)], pos: [jit(ex, 0.03), 0, jit(ez, 0.03)], start: rng.float(3, 12), stray: true });
       }
 
       this.pieces = pieces;

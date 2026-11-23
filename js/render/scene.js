@@ -22,7 +22,7 @@
   'use strict';
 
   const MAXB = 160;
-  const SHADOW_W = 384, SHADOW_H = 256;
+  const SHADOW_W = 576, SHADOW_H = 384;
   const RELIEF = 0.006;
 
   /* ------------------------------------------------------------ math */
@@ -199,7 +199,7 @@
       vec4 c = texelFetch(u_boxes, ivec2(i, 0), 0);
       vec4 h = texelFetch(u_boxes, ivec2(i, 1), 0);
       vec2 q = max(abs(p - c.xz) - h.xz, 0.0);
-      float reach = 0.05 + 0.5 * h.y;              // taller pieces send their veins further
+      float reach = 0.07 + 0.55 * h.y;             // taller pieces send their veins further
       near = max(near, exp(-length(q) / reach));
     }
     return near;
@@ -210,10 +210,13 @@
     // a calm, clean ground; the field only shows as a few veins where pieces are born
     vec3 col = u_ground;
     float near = nearPieces(v_world.xz);
-    near *= 0.75 + 0.5 * (fbm(v_uv * 9.0 + 2.0) * 0.5 + 0.5);
-    float vein = s.a * smoothstep(0.08, 0.6, near);
-    col = mix(col, s.rgb, clamp(vein * 1.15, 0.0, 1.0));
-    col = mix(col, s.rgb, smoothstep(0.75, 1.0, near) * 0.25);   // a faint bloom at the foot
+    // an organic, ragged border: the field spreads out from the pieces like a stain
+    float edgeN = fbm(v_uv * 7.0 + 2.0) * 0.5 + 0.5 + 0.25 * snoise(v_uv * 40.0);
+    float field = smoothstep(0.18, 0.5, near * (0.7 + 0.6 * edgeN));
+    // beyond it, the longest veins still run out a little further
+    float runner = s.a * smoothstep(0.06, 0.25, near) * smoothstep(0.4, 0.8, s.a);
+    float show = max(field, runner);
+    col = mix(col, s.rgb, show);
 
     // relief lighting from the matter channel
     vec2 tx = 1.0 / vec2(textureSize(u_surface, 0));
@@ -223,7 +226,7 @@
     float hU = textureLod(u_surface, v_uv + vec2(0.0, tx.y * 1.5), 0.7).a;
     float k = ${RELIEF} * 2.2;
     vec3 n = normalize(vec3(-(hR - hL) * k / (3.0 * tx.x * u_aspect), 1.0, (hU - hD) * k / (3.0 * tx.y)));
-    col *= 1.0 + min(0.0, dot(n, u_light) - u_light.y) * 0.9 * smoothstep(0.08, 0.6, near);
+    col *= 1.0 + (dot(n, u_light) - u_light.y) * 1.8 * show;
 
     // the pieces' shadows bleed into the linen like soot
     vec2 wq = v_uv + 0.0035 * vec2(snoise(v_uv * 46.0), snoise(v_uv * 46.0 + 7.3));
@@ -496,7 +499,7 @@
       this.nbox = 0;
       this.light = V.norm([-0.5, 0.9, -0.35]);
 
-      this.cam = { yaw: 0.0, pitch: 0.82, dist: 2.0, yawT: 0.35, pitchT: 0.82, distT: 1.9 };
+      this.cam = { yaw: 0.0, pitch: 0.78, dist: 1.8, yawT: 0.35, pitchT: 0.78, distT: 1.5 };
       this.top = false;
       this.drift = true;
     }
@@ -628,7 +631,7 @@
       if (this.shadowT <= 0 && (growing || this._wasGrowing)) {
         this._wasGrowing = growing;
         this._lastCount = pieces.length;
-        this.shadowT = 0.12;
+        this.shadowT = 0.18;
         this.uploadBoxes();
         gl.bindVertexArray(this.emptyVAO);
         gl.disable(gl.DEPTH_TEST);

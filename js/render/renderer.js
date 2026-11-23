@@ -31,8 +31,12 @@
       this.count = 0;
       this.frame = 0;
 
-      this.quality = Math.min(window.devicePixelRatio || 1, 1.5);
+      // HD: the view is drawn at the screen's full pixel density; when frames get
+      // slow the FIELD is repainted less often, never at a lower resolution
+      this.quality = Math.min(window.devicePixelRatio || 1, 2);
       this.maxQuality = this.quality;
+      this.minQuality = Math.min(1, this.quality);
+      this.fieldEvery = 1;
       this.frameMs = 16;
       this.slowFrames = 0;
       this.fastFrames = 0;
@@ -77,9 +81,11 @@
 
     sizeSurface() {
       const gl = this.gl;
-      const w = Math.max(256, Math.min(2048, Math.round(Math.max(this.cssW, this.cssH * 1.5) * this.quality * 0.95 / 64) * 64));
+      // a fixed, high-resolution surface: sharp veins even close up
+      const max = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+      const w = Math.min(max, 3072);
       const h = Math.round(w / this.aspect);
-      if (this.surface && Math.abs(this.surface.w - w) < 128) return;
+      if (this.surface) return;
       if (this.surface) { gl.deleteTexture(this.surface.tex); gl.deleteFramebuffer(this.surface.fb); }
       this.surface = this.surfaceTarget(w, h);
       const mw = Math.max(8, Math.floor(w / MEMORY_DIV)), mh = Math.max(8, Math.floor(h / MEMORY_DIV));
@@ -163,7 +169,7 @@
     }
 
     setQuality(q) {
-      q = Math.max(0.45, Math.min(this.maxQuality, q));
+      q = Math.max(this.minQuality, Math.min(this.maxQuality, q));
       if (Math.abs(q - this.quality) < 0.01) return;
       this.quality = q;
       this.canvas.width = Math.max(2, Math.floor(this.cssW * q));
@@ -174,10 +180,19 @@
     /** Adaptive resolution: protect fluid motion over pixel density. */
     measure(ms) {
       this.frameMs = lerp(this.frameMs, ms, 0.05);
-      if (this.frameMs > 24) { if (++this.slowFrames > 40) { this.setQuality(this.quality * 0.85); this.slowFrames = 0; } }
-      else this.slowFrames = 0;
-      if (this.frameMs < 13 && this.quality < this.maxQuality) {
-        if (++this.fastFrames > 240) { this.setQuality(this.quality * 1.1); this.fastFrames = 0; }
+      if (this.frameMs > 26) {
+        if (++this.slowFrames > 60) {
+          if (this.fieldEvery < 3) this.fieldEvery++;
+          else this.setQuality(this.quality * 0.9);
+          this.slowFrames = 0;
+        }
+      } else this.slowFrames = 0;
+      if (this.frameMs < 18) {
+        if (++this.fastFrames > 300) {
+          if (this.quality < this.maxQuality) this.setQuality(this.quality * 1.1);
+          else if (this.fieldEvery > 1) this.fieldEvery--;
+          this.fastFrames = 0;
+        }
       } else this.fastFrames = 0;
     }
 
@@ -283,14 +298,19 @@
     render(daemon, dt, time) {
       const gl = this.gl;
       const org = daemon.organism;
-      this.upload(org);
       this.easeColors(daemon.palette, dt);
+      if (this.frame % this.fieldEvery !== 0) {
+        this.scene.draw(time, dt, this.content);
+        this.frame++;
+        return;
+      }
+      this.upload(org);
       gl.bindVertexArray(this.vao);
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.BLEND);
 
       // memory pass (~20 Hz)
-      if (this.frame % 3 === 0 && dt > 0) {
+      if (this.frame % (3 * this.fieldEvery) === 0 && dt > 0) {
         const [src, dst] = this.mem;
         gl.useProgram(this.progMem.p);
         this.bindField(this.progMem, time);

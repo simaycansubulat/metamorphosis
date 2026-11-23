@@ -18,13 +18,15 @@ a build step, a server or any dependencies; it works offline. WebGL2 is required
 | press & hold still on the board | offer attention at a point; nearby loci respond and nearby pieces grow faster |
 | drag · scroll / pinch | turn around the board · come closer (left alone, the view turns slowly) |
 | T (or "above") | look straight down, as in the flat version, and back |
+| 1 – 5 | preset views: 1 orbit · 2 above · 3 low, at the height of the pieces · 4 side, along the board · 5 close up on a piece (press again for another) |
+| C (or "cuts") | the camera cuts between the presets on its own every 8–15 s, creeping slowly inside each shot (an exhibition loop); dragging or zooming takes the camera back |
 | Space | **hold**: freeze the daemon to study a configuration |
 | N | a new session (the old body dissolves while a new one grows) |
 | Esc | end the session |
 | F | fullscreen |
 | H | hide every mark; only the surface remains |
 | D | observer's notes: a live readout of the daemon's state, for the team |
-| M | sound on / off (the slider beside "sound" sets the volume) |
+| W (or "cams") | webcams: read a real construction built with Jenga blocks (see below) |
 
 Each session gets a 5-character code (top left, also written into the URL as
 `?seed=XXXXX`). Opening that URL reproduces the same initial configuration and
@@ -39,17 +41,23 @@ moment for the participant to answer with the pieces.
 The surface lies on a board, and out of it the daemon grows its own pieces.
 Nobody places them. Every session unfolds a different composition from the
 seed and from the will's intention (`js/daemon/growth.js`), built the way
-the workshop's Jenga models were: elongated pieces (about 3 : 1 : 0.6)
-standing as posts and laid across as beams, in towers of criss-crossed
-tiers, frames, arches spanning two places, crosses, T-posts and low
-criss-cross piles. The
+the workshop's Jenga models were: elongated stones, mostly standing, and
+mostly chunky: cubes, short, thick and slab-like stones, only a few long
+ones. Gates (two posts and a lintel, often slid off-centre),
+posts stacked end on end, T's whose beam cantilevers out, totems of two or
+three storeys crowned by a lone post, single standing stones; 15 to 25
+stones in all. The
 pieces rise one after another, and the upper ones only once what carries
 them has grown. A few stray pieces grow where it does not want matter;
 they irritate and, after a while, sink back into the surface.
 
-The pieces are not regular blocks: each is a subdivided form, slightly
-tapered, bent and swollen, its corners pulled in and every vertex knocked,
-so it is irregular, sharp-faceted and organic. Shadows are cast by the
+The pieces are cut stones, never the same block twice: each has its own
+character (crisp ashlar, chipped rubble, weathered, split), an uneven
+section, a weathered surface, facets knapped off its edges and corners and
+often a broken, slanted end. Its surface is stone (strata, grain, pits),
+only stained by the daemon's pattern, and its worn edges catch the light.
+At each stone's foot dark veins take root and spread like mycelium,
+tapering and branching into ever finer hairs. Shadows are cast by the
 pieces' real shapes (a shadow map) and softened like soot. The field is still painted exactly
 as before (into a texture on the board, `js/render/scene.js`), and its
 pattern continues onto the pieces:
@@ -67,6 +75,50 @@ The body is reported to the will as the same 8 × 5 height map, so the loop
 below now runs between the daemon and its own growth: lack stains gather
 where it has not grown yet, and it settles as the form completes. The
 participant watches, turns around it and offers attention.
+
+## Building for real: two webcams
+
+Press **W** (or "cams") to let the daemon read a real construction built with
+Jenga blocks instead of growing its own body (`js/ui/cameras.js`).
+
+- **top camera:** looks down on the building area and finds which of the
+  8 × 5 cells hold blocks, by comparing with a picture of the empty area
+- **side camera** (optional): looks at the front edge and measures how tall
+  each of the 8 columns is, against one standing block. Without it every
+  occupied cell counts as one standing block.
+
+Setup: choose the two cameras; on the top view press "corners" and click the
+building area's corners (back-left, back-right, front-right, front-left;
+front is where the side camera stands); on the side view press "base" and
+click the front edge's left end, its right end, and the top of one block
+standing upright on the left end. Clear the area, press "empty" on both, set
+the sensitivity, then tick **live**. A change only counts once the picture
+has been still for about a second, so hands reaching in are ignored. On the
+screen the daemon's body becomes a mirror of what you built, and the will
+judges it exactly as before. The calibration is remembered in the browser.
+The side camera can't tell rows apart, so all built cells in one column get
+that column's height. Two webcams on one USB hub sometimes refuse to run
+together; use separate ports.
+
+## The beginning: the Künstliche Ruine
+
+Every session opens with the ruin from its 3D model,
+`assets/kuenstliche_ruine_weimar_game_ready.glb` (910 parts: wall stones,
+window frames, the stone ball, ivy leaves and grass). Because a page opened
+as a local file may not load a `.glb`, the model is converted to
+`js/daemon/ruin-model.js` (same geometry and colours). To use a new model,
+replace the `.glb` and regenerate that file. It is scaled to 0.9 wide on the
+board and drawn in one pass (`syncRuin()` and `RUINM_*` in `scene.js`), with
+weathering on the stones and shadows. Every part can move on its own.
+
+It stands for about ten seconds. Then it collapses, without trembling:
+from the west end the parts fall, break where they land, and each stone
+leaves a small heap of stone-coloured grit on the ground (the plants fall
+with them). Then the grit creeps along the ground to where the new stones
+rise out of it (`ruinFromModel()`, `moveRuin()` and `moveDust()` in
+`js/daemon/growth.js`). The ruin is not the daemon's body: the will never
+reads it. Without the model file, a procedural ruin is built instead
+(`ruin()`).
 
 ## The loop: intention, construction, negotiation
 
@@ -207,10 +259,14 @@ favoured gestures, tempo, a dominant axis and its coherence. Different sessions
 therefore speak different dialects of the same language.
 
 ### Sound
-Sound is made of short, dry, harsh, independent percussive events (a
-gritty saturated master with a coarse quantiser and a hard presence boost): `click`, `tap`,
-`knock`, `thud`, `pulse` (an organic throb) and `rattle` (irregular
-contacts). It is synthesized in the browser with no samples. There are no
+**Switched off for now:** `main.js` creates no synth or sonifier and the
+sound controls are hidden. The code in `js/sound/` is kept for later.
+
+Sound is made of short, dry, independent percussive events (a lightly
+saturated master; everything below 120 Hz is cut, so nothing rumbles):
+`click`, `tap`, `knock`, `thud` (a heavy block set down on stone, with no
+low sine or pitch glide), `pulse` (a soft breath of high noise, like a brush
+over paper) and `rattle` (irregular contacts). It is synthesized in the browser with no samples. There are no
 melodies, held notes, loops, tempo, drone, reverb or delay. A sound happens
 only when something happens:
 
@@ -247,6 +303,7 @@ css/daemon.css
 js/
   core/      random.js (seeded RNG, session codes) · noise.js · emitter.js
   daemon/    palette.js      earth pigments (+ the oxide-red signal colour)
+             ruin-model.js   the Künstliche Ruine's 3D model, from assets/*.glb
              will.js         the intention, the model, evaluation, negotiation
              growth.js       the body: pieces grown from the intention, every session anew
              temperament.js  seed → dialect (reshaped by the will)

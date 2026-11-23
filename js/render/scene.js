@@ -174,7 +174,7 @@
 
   const BOARD_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
   uniform sampler2D u_surface;
-  uniform vec3 u_inkEdge, u_fog, u_eye, u_ground;
+  uniform vec3 u_inkEdge, u_ink, u_fog, u_eye, u_ground;
   in vec2 v_uv;
   in vec3 v_world;
   out vec4 outColor;
@@ -187,12 +187,38 @@
       if (i >= u_nbox) break;
       float h, y0;
       float d = max(footDist(p, i, h, y0), 0.0);
-      float w = exp(-y0 / 0.03);                    // pieces resting on others root less
+      float w = exp(-max(y0, 0.0) / 0.03);                    // pieces resting on others root less
       float reach = 0.08 + 0.5 * h;                 // taller pieces send their veins further
       near = max(near, w * exp(-d / reach));
       ao = min(ao, 1.0 - 0.6 * w * exp(-d / 0.014));
     }
     return near;
+  }
+
+  // mycelial veins: dark roots at the foot of the stones that taper and branch
+  // into ever finer hairs as they spread. Each finer order only grows along
+  // the coarser one before it, so the network branches instead of tiling.
+  // returns (ink, soft shadow)
+  vec2 veins(vec2 p, float near, float t) {
+    vec2 w = p + 0.045 * vec2(fbm(p * 5.0 + 1.7 + t * 0.004), fbm(p * 5.0 - 4.1));
+    float ink = 0.0, halo = 0.0, parent = 1.0;
+    float f = 7.0, width = 0.075, reach = 0.04;
+    for (int o = 0; o < 4; o++) {
+      vec2 q = w * f + float(o) * 17.3;
+      q += 0.25 * vec2(snoise(q * 2.3), snoise(q * 2.3 + 9.0));      // kinks, no straight runs
+      float r = 1.0 - abs(snoise(q));                                  // 1 on the vein's axis
+      float grow = smoothstep(reach, reach + 0.35, near);              // how far this order reaches
+      // veins run in stretches and end in a fine point, so they branch instead of closing into cells
+      float run = smoothstep(-0.05, 0.55, snoise(q * 0.32 + 31.0 + float(o) * 5.0));
+      float wd = width * (0.2 + 0.8 * near) * grow * run;              // tapers away from the stone
+      float line = smoothstep(1.0 - wd, 1.0 - wd * 0.2, r) * parent;
+      ink = max(ink, line * (1.0 - 0.18 * float(o)));
+      halo = max(halo, smoothstep(1.0 - wd * 4.0, 1.0, r) * parent * grow);
+      // the next, finer order only sprouts beside this one
+      parent *= smoothstep(1.0 - wd * 6.0 - 0.06, 1.0 - wd * 0.5, r);
+      f *= 2.1; width *= 0.72;
+    }
+    return vec2(ink, halo);
   }
 
   void main() {
@@ -207,7 +233,15 @@
     // beyond it, the longest veins still run out a little further
     float runner = s.a * smoothstep(0.06, 0.25, near) * smoothstep(0.4, 0.8, s.a);
     float show = max(field, runner);
-    col = mix(col, s.rgb, show);
+    col = mix(col, s.rgb, show * 0.6);
+
+    // the veins themselves: ink with a faint wet halo, a few cream fibres among them
+    vec2 vn = veins(v_world.xz, near, u_time);
+    float fibre = smoothstep(0.55, 0.85, snoise(v_world.xz * 3.0 + 5.0));
+    vec3 veinCol = mix(u_inkEdge * 0.9, u_ink, smoothstep(0.3, 1.0, vn.x));
+    col *= 1.0 - vn.y * 0.1;
+    col = mix(col, veinCol, vn.x * 0.92 * (1.0 - fibre * 0.6));
+    col = mix(col, col * 1.15 + 0.04, vn.x * fibre * 0.5);
 
     // relief lighting from the matter channel
     vec2 tx = 1.0 / vec2(textureSize(u_surface, 0));
@@ -217,7 +251,7 @@
     float hU = textureLod(u_surface, v_uv + vec2(0.0, tx.y * 1.5), 0.7).a;
     float k = ${RELIEF} * 2.2;
     vec3 n = normalize(vec3(-(hR - hL) * k / (3.0 * tx.x * u_aspect), 1.0, (hU - hD) * k / (3.0 * tx.y)));
-    col *= 1.0 + (dot(n, u_light) - u_light.y) * 1.8 * show;
+    col *= 1.0 + (dot(n, u_light) - u_light.y) * 0.8 * show;
 
     // the pieces' shadows bleed into the linen like soot
     vec3 gp = vec3(v_world.x, 0.0, v_world.z) + 0.0035 * vec3(snoise(v_uv * 46.0), 0.0, snoise(v_uv * 46.0 + 7.3));
@@ -259,7 +293,7 @@
   const PIECE_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
   uniform sampler2D u_surface, u_will;
   uniform vec4  u_gridRect;
-  uniform float u_seed, u_g, u_mode;     // mode: 0 piece · 2 board edge
+  uniform float u_seed, u_g, u_mode, u_tint;   // mode: 0 piece · 1 the old ruin · 2 board edge; tint (ruin): 0 stone · 1 pale · 2 brick · 3 mortar
   uniform int   u_self;
   uniform vec3  u_paperDeep, u_cream, u_ink, u_inkEdge, u_signal, u_washA, u_washB, u_tissue, u_fog, u_eye;
   in vec3 v_world, v_nrm, v_bary, v_crease;
@@ -319,7 +353,43 @@
     col *= 1.0 - (1.0 - smoothstep(0.0, 0.5, e1)) * 0.14;          // cells bulge
     float lum = dot(col, vec3(0.3, 0.59, 0.11));
     vec3 wallCol = mix(u_cream, u_tissue, smoothstep(0.22, 0.42, lum));
-    col = mix(col, wallCol, mem * 0.55);
+    col = mix(col, wallCol, mem * 0.16);
+
+    // --- stone: the piece is cut stone first, the daemon's pattern only stains it ----------
+    vec3 sp = wp * 1.0 + u_seed * 3.1;
+    float strata = vnoise3(vec3(sp.x * 9.0, sp.y * 70.0 + vnoise3(sp * 14.0) * 3.0, sp.z * 9.0));
+    float grainN = hash13(floor(wp * 2600.0));                        // mineral grain
+    float pits = smoothstep(0.72, 0.9, vnoise3(sp * 210.0)) * 0.5 + smoothstep(0.8, 0.95, vnoise3(sp * 75.0)) * 0.6;
+    float mottle = vnoise3(sp * 24.0) * 0.6 + vnoise3(sp * 60.0) * 0.4;
+    vec3 stone = mix(mix(u_cream, u_washA, 0.35 + 0.3 * hash12(vec2(u_seed, 3.0))), mix(u_washB, u_paperDeep, 0.5), mottle * 0.55);
+    stone *= 0.9 + 0.12 * strata;
+    stone *= 0.93 + 0.12 * grainN;
+    stone *= 1.0 - pits * 0.32;
+    col = mix(stone, col, 0.32 + 0.4 * pat.a);
+
+    // --- the old ruin: weathered limestone rubble, grime, lichen, moss; pale arch, red brick, mortar ---
+    float isRuin = step(0.5, u_mode) * (1.0 - step(1.5, u_mode));
+    if (isRuin > 0.5) {
+      float tone = hash12(vec2(u_seed * 7.1, 2.0));
+      float t2 = hash12(vec2(u_seed * 3.7, 9.0));
+      vec3 lime = mix(vec3(0.74, 0.71, 0.65), vec3(0.6, 0.57, 0.52), tone);      // grey limestone
+      lime = mix(lime, mix(vec3(0.74, 0.65, 0.5), vec3(0.6, 0.51, 0.4), tone), step(0.6, t2));   // ochre and brown ones
+      lime = mix(lime, vec3(0.88, 0.85, 0.77), step(0.86, t2));                 // a few pale ones
+      if (u_tint > 0.5 && u_tint < 1.5) lime = mix(vec3(0.88, 0.85, 0.77), vec3(0.78, 0.74, 0.64), tone);   // pale dressed stone
+      if (u_tint > 1.5 && u_tint < 2.5) lime = mix(vec3(0.56, 0.27, 0.18), vec3(0.66, 0.38, 0.26), tone);   // brick
+      if (u_tint > 2.5) lime = vec3(0.36, 0.33, 0.28);                            // mortar, deep in the joints
+      lime *= 0.86 + 0.16 * mottle + 0.08 * (grainN - 0.5);
+      lime *= 1.0 - pits * 0.45;
+      float along = dot(wp.xz, vec2(0.98, 0.2));
+      float runs = smoothstep(0.35, 0.9, snoise(vec2(along * 90.0, wp.y * 6.0 + u_seed)) * 0.5 + 0.5);
+      float grime = runs * 0.3 + (1.0 - smoothstep(0.0, 0.1, wp.y)) * 0.3;
+      lime *= 1.0 - grime * 0.4;
+      lime = mix(lime, lime * 0.45, line * 0.6);                                   // shadowed arrises
+      float lich = smoothstep(0.66, 0.82, vnoise3(wp * 95.0 + u_seed));
+      lime = mix(lime, mix(vec3(0.86, 0.85, 0.78), vec3(0.7, 0.64, 0.38), step(0.5, hash12(floor(wp.xz * 300.0)))), lich * 0.45 * step(u_tint, 0.5));
+      float moss = smoothstep(0.55, 0.8, vnoise3(wp * 40.0 - u_seed)) * (max(n.y, 0.0) * 0.8 + (1.0 - smoothstep(0.0, 0.07, wp.y)));
+      col = mix(lime, vec3(0.3, 0.36, 0.17), clamp(moss, 0.0, 1.0) * 0.6 * step(u_tint, 0.5));
+    }
 
     // each facet catches the pigment a little differently: sharp, mineral
     vec3 fn = floor(n * 9.0 + 0.5);
@@ -335,7 +405,7 @@
     vec4 will = texture(u_will, gq);
     vec2 ge = min(gq, 1.0 - gq);
     will *= smoothstep(-0.05, 0.04, min(ge.x, ge.y));
-    float excess = clamp(will.g, 0.0, 1.0), harmony = clamp(will.b, 0.0, 1.0);
+    float excess = clamp(will.g, 0.0, 1.0) * (1.0 - step(0.5, u_mode)), harmony = clamp(will.b, 0.0, 1.0) * (1.0 - step(0.5, u_mode));
     vec2 sq = vec2(dot(wp.xz, vec2(0.8, 0.6)) * 30.0 + u_time * 0.35, wp.y * 150.0);
     float scratch = smoothstep(0.6, 0.95, snoise(sq + 2.0 * fbm(wp.xz * 9.0 + u_time * 0.05)));
     scratch *= excess * (0.55 + 0.45 * sin(u_time * 5.0 + u_seed * 3.0));
@@ -344,12 +414,156 @@
 
     // --- light: crisp facets, other pieces cast shadows -----------------------------------
     float sh = ndl > 0.0 ? shadowAt(wp + n * 0.002, 0.0012, 1.4) : 0.0;
-    float lit = 0.5 + 0.55 * max(ndl, 0.0) * sh + 0.08 * n.y;
+    float lit = 0.5 + 0.55 * max(ndl, 0.0) * sh + 0.08 * n.y + isRuin * 0.24;   // the ruin stands in daylight
     lit *= 0.75 + 0.25 * smoothstep(0.0, 0.03, wp.y);
     col *= lit;
 
-    col = mix(col, u_ink, line * 0.75);
+    // worn arrises: the sharp folds catch light, with only a fine dark seam
+    col = mix(col, col * 1.18 + 0.03, line * 0.5);
+    col = mix(col, u_ink, line * 0.22);
     col = mix(col, u_fog, smoothstep(1.6, 4.5, distance(wp, u_eye)) * 0.45);
+    outColor = vec4(col, 1.0);
+  }`;
+
+  /* the ruin's dust: soft grains of stone, drifting (growth.dust) */
+  const DUST_VS = HEAD + `
+  layout(location = 0) in vec4 a_p;      // x, y, z, alpha
+  layout(location = 1) in float a_size;  // world size
+  uniform mat4 u_viewProj;
+  uniform float u_px;                    // pixels per world unit at distance 1
+  out float v_a;
+  out float v_seed;
+  void main() {
+    gl_Position = u_viewProj * vec4(a_p.xyz, 1.0);
+    gl_PointSize = clamp(a_size * u_px / gl_Position.w, 1.0, 48.0);
+    v_a = a_p.w;
+    v_seed = fract(sin(float(gl_VertexID) * 12.9898) * 43758.5453);
+  }`;
+  const DUST_FS = HEAD + `
+  uniform vec3 u_dustA, u_dustB;
+  in float v_a;
+  in float v_seed;
+  out vec4 outColor;
+  void main() {
+    vec2 q = gl_PointCoord * 2.0 - 1.0;
+    float r = dot(q, q);
+    if (r > 1.0) discard;
+    float a = (1.0 - r) * (1.0 - r) * v_a;
+    outColor = vec4(mix(u_dustA, u_dustB, v_seed) * a, a);   // premultiplied
+  }`;
+
+  /* the ruin from its 3D model: one mesh, every part moved by its own row in u_state
+     * (row 0 pivot + plant, row 1 offset + spin, row 2 scale) */
+  const RUINM_VS = HEAD + `
+  layout(location = 0) in vec3 a_local;
+  layout(location = 1) in vec3 a_nrm;
+  layout(location = 2) in vec3 a_col;
+  layout(location = 3) in vec2 a_part;   // index, plant
+  uniform mat4 u_viewProj;
+  uniform sampler2D u_state;
+  out vec3 v_world, v_nrm, v_col;
+  out float v_plant;
+  void main() {
+    int id = int(a_part.x + 0.5);
+    vec4 pv = texelFetch(u_state, ivec2(id, 0), 0);
+    vec4 of = texelFetch(u_state, ivec2(id, 1), 0);
+    float sc = texelFetch(u_state, ivec2(id, 2), 0).x;
+    float c = cos(of.w), s = sin(of.w);
+    vec3 l = a_local * sc;
+    vec3 wp = pv.xyz + of.xyz + vec3(c * l.x + s * l.z, l.y, -s * l.x + c * l.z);
+    if (sc <= 0.0) wp = vec3(0.0, -10.0, 0.0);
+    v_world = wp;
+    v_nrm = vec3(c * a_nrm.x + s * a_nrm.z, a_nrm.y, -s * a_nrm.x + c * a_nrm.z);
+    v_col = a_col; v_plant = a_part.y;
+    gl_Position = u_viewProj * vec4(wp, 1.0);
+  }`;
+  const RUINM_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
+  uniform vec3 u_fog, u_eye;
+  in vec3 v_world, v_nrm, v_col;
+  in float v_plant;
+  out vec4 outColor;
+  void main() {
+    vec3 n = normalize(v_nrm), wp = v_world, col = v_col;
+    if (v_plant < 0.5) {
+      // weathered stone: grain, pits, grime run down, lichen, damp at the foot
+      col *= 0.86 + 0.2 * vnoise3(wp * 180.0) + 0.08 * (vnoise3(wp * 700.0) - 0.5);
+      col *= 1.0 - smoothstep(0.75, 0.92, vnoise3(wp * 420.0)) * 0.35;
+      col *= 1.0 - smoothstep(0.55, 0.95, vnoise3(vec3(wp.x * 60.0, wp.y * 14.0, wp.z * 60.0))) * 0.12;   // faint grime
+      col = mix(col, vec3(0.8, 0.78, 0.66), smoothstep(0.7, 0.85, vnoise3(wp * 130.0)) * 0.3);
+      col *= 1.0 - (1.0 - smoothstep(0.0, 0.06, wp.y)) * 0.25;
+    } else {
+      col *= 0.85 + 0.3 * vnoise3(wp * 300.0);
+      if (dot(n, u_eye - wp) < 0.0) n = -n;                      // leaves are lit on both sides
+    }
+    float ndl = v_plant > 0.5 ? abs(dot(n, u_light)) : max(dot(n, u_light), 0.0);
+    float sh = shadowAt(wp + n * 0.002, 0.0015, 1.4);
+    float lit = 0.62 + 0.55 * ndl * sh + 0.08 * n.y;
+    col *= lit;
+    col = mix(col, u_fog, smoothstep(1.6, 4.5, distance(wp, u_eye)) * 0.45);
+    outColor = vec4(col, 1.0);
+  }`;
+
+  /* the ruin's ivy: lobed leaves and vine stems, one instanced quad each (growth.ivy) */
+  const IVY_VS = HEAD + `
+  layout(location = 0) in vec4 a_c;      // centre, kind (0 leaf, 1 stem)
+  layout(location = 1) in vec4 a_n;      // facing normal, shade
+  layout(location = 2) in vec4 a_s;      // size, rotation, falls at, -
+  uniform mat4 u_viewProj;
+  uniform float u_t;
+  out vec2 v_q;
+  out vec3 v_n, v_world;
+  out float v_kind, v_shade, v_gone;
+  void main() {
+    int id = gl_VertexID % 6;
+    vec2 q = vec2(id == 1 || id == 2 || id == 4 ? 1.0 : -1.0, id == 2 || id == 4 || id == 5 ? 1.0 : -1.0);
+    vec3 n = normalize(a_n.xyz);
+    vec3 up = abs(n.y) > 0.95 ? vec3(1, 0, 0) : vec3(0, 1, 0);
+    vec3 t = normalize(cross(up, n)), b = cross(n, t);
+    float c = cos(a_s.y), s = sin(a_s.y);
+    vec2 r = vec2(c * q.x - s * q.y, s * q.x + c * q.y);
+    vec2 k = a_c.w > 1.5 ? vec2(0.2, 1.0) : a_c.w > 0.5 ? vec2(0.16, 1.0) : vec2(1.0);   // stems and blades are thin
+    vec3 p = a_c.xyz + (t * r.x * k.x + b * r.y * k.y) * a_s.x;
+    // with the wall they fall
+    float f = max(u_t - a_s.z, 0.0);
+    p.y -= 1.6 * f * f;
+    v_gone = step(p.y, -0.002);
+    v_q = q; v_n = n; v_world = p; v_kind = a_c.w; v_shade = a_n.w;
+    gl_Position = u_viewProj * vec4(p, 1.0);
+  }`;
+  const IVY_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
+  uniform vec3 u_fog, u_eye;
+  in vec2 v_q;
+  in vec3 v_n, v_world;
+  in float v_kind, v_shade, v_gone;
+  out vec4 outColor;
+  void main() {
+    if (v_gone > 0.5) discard;
+    vec3 col;
+    if (v_kind > 1.5) {
+      if (abs(v_q.x) > 0.95 * (1.0 - (v_q.y + 1.0) * 0.5)) discard;          // a tapering blade
+      col = mix(vec3(0.3, 0.38, 0.14), vec3(0.6, 0.6, 0.3), v_shade) * (0.75 + 0.3 * (v_q.y + 1.0) * 0.5);
+    } else if (v_kind > 0.5) {
+      if (abs(v_q.x) > 0.9) discard;
+      col = mix(vec3(0.22, 0.17, 0.11), vec3(0.32, 0.26, 0.17), v_shade);
+    } else {
+      // an ivy leaf: three to five pointed lobes, stalk at the bottom
+      vec2 q = v_q * vec2(1.0, -1.0) + vec2(0.0, 0.12);
+      float a = atan(q.x, q.y), r = length(q);
+      float lobes = 0.62 + 0.34 * pow(abs(cos(a * 1.5)), 3.0) - 0.18 * smoothstep(1.9, 3.1, abs(a));
+      if (r > lobes) discard;
+      float vein = smoothstep(0.06, 0.0, abs(fract(a * 0.955 + 0.5) - 0.5) * r) * (1.0 - r / lobes);
+      col = mix(vec3(0.14, 0.2, 0.07), vec3(0.38, 0.44, 0.17), v_shade);
+      col = mix(col, col * 1.6 + vec3(0.03, 0.04, 0.0), vein * 0.5);
+      col *= 0.82 + 0.25 * r;
+    }
+    vec3 n = normalize(v_n);
+    float ndl = abs(dot(n, u_light));
+    float sh = shadowAt(v_world + n * 0.002, 0.0015, 1.4);
+    float lit = 0.62 + 0.6 * ndl * sh;
+    vec3 h = normalize(u_light + normalize(u_eye - v_world));
+    float spec = pow(max(dot(n, h), 0.0), 40.0) * 0.25 * sh * step(v_kind, 0.5);   // waxy shine
+    col = col * lit + spec;
+    col = mix(col, u_fog, smoothstep(1.6, 4.5, distance(v_world, u_eye)) * 0.45);
     outColor = vec4(col, 1.0);
   }`;
 
@@ -366,41 +580,70 @@
     knot:  (r) => ({ top: r.float(0.45, 0.75), tp: 1.2, tip: 0.08, bend: r.float(-0.1, 0.1), bulge: 0.28, jit: 0.16, corner: r.float(0.3, 0.5), f: 24 }),
     beam:  (r) => ({ top: r.float(0.82, 0.97), tp: 1, tip: 0.03, bend: r.float(-0.06, 0.06), bulge: 0.09, jit: 0.07, corner: r.float(0.25, 0.45), f: 14 }),
     box:   () => ({ top: 1, tp: 1, tip: 0, bend: 0, bulge: 0, jit: 0, corner: 0, f: 1 }),
+    ball:  () => ({ top: 1, tp: 1, tip: 0, bend: 0, bulge: 0, jit: 0, corner: 0, f: 1 }),
+    // a squared masonry stone (the ruin's wall): crisp, flat-faced, only lightly worn
+    block: () => ({ top: 1, tp: 1, tip: 0, bend: 0, bulge: 0.1, jit: 0.08, corner: 0.35, f: 22 }),
   };
 
   function pieceGeometry(kind, size, seed) {
     const rng = new RUIN.Random(seed >>> 0);
     const noise = RUIN.createNoise3D(rng);
     const K = KINDS[kind](rng);
+    const box = kind === 'box';
     const [sx, sy, sz] = size;
-    const seg = (d) => (kind === 'box' ? 1 : Math.max(1, Math.min(5, Math.round(d / 0.026))));
+    // fine enough for chips and grain to read as stone, not as a block
+    const seg = (d) => (kind === 'ball' ? 7 : box ? 1 : Math.max(2, Math.min(14, Math.round(d / 0.011))));
     const nx = seg(sx), ny = seg(sy), nz = seg(sz);
-    const tipX = rng.float(-1, 1) * K.tip, tipZ = rng.float(-1, 1) * K.tip;
-    const md = Math.min(sx, sz, kind === 'slab' ? sy * 1.6 : 9);
+    const md = Math.min(sx, sy, sz);
+    const tipX = rng.float(-1, 1) * K.tip * 0.4, tipZ = rng.float(-1, 1) * K.tip * 0.4;
+
+    // every stone has its own character
+    const style = kind === 'block' ? 'masonry' : rng.pick(['ashlar', 'ashlar', 'rubble', 'weathered', 'split', 'split']);
+    const amp = { masonry: 0.13, ashlar: 0.05, rubble: 0.14, weathered: 0.1, split: 0.07 }[style] * md;
+    const nChips = { masonry: rng.int(2, 6), ashlar: rng.int(3, 6), rubble: rng.int(9, 15), weathered: rng.int(4, 8), split: rng.int(5, 9) }[style];
+    const squash = style === 'masonry' ? [1, 1] : [rng.float(0.86, 1.12), rng.float(0.86, 1.12)];     // uneven section
+    const C = [0, sy * 0.5, 0];
+    // cut planes slice facets off edges and corners, like knapped stone;
+    // never from below, so it still stands flat
+    const planes = [];
+    for (let k = 0; k < nChips; k++) {
+      const n = V.norm([rng.float(0.15, 1) * rng.pick([-1, 1]), rng.float(-0.2, 1), rng.float(0.15, 1) * rng.pick([-1, 1])]);
+      const h = 0.5 * (Math.abs(n[0]) * sx + Math.abs(n[1]) * sy + Math.abs(n[2]) * sz);
+      planes.push({ n, d: h - rng.float(0.08, style === 'rubble' ? 0.42 : style === 'masonry' ? 0.14 : 0.3) * md * 1.6 });
+    }
+    // a broken, slanted end
+    if (style === 'split' || (style !== 'masonry' && rng.chance(0.35))) {
+      const n = V.norm([rng.float(-0.45, 0.45), 1, rng.float(-0.45, 0.45)]);
+      planes.push({ n, d: 0.5 * (Math.abs(n[0]) * sx + n[1] * sy + Math.abs(n[2]) * sz) - rng.float(0.15, 0.45) * md });
+    }
+
     const verts = new Map();
     const P = [];
     const vid = (a, b, c) => {
       const k = a + ',' + b + ',' + c;
       if (verts.has(k)) return verts.get(k);
       const u = a / nx - 0.5, v = b / ny, w = c / nz - 0.5;
-      let x = u * sx, y = v * sy, z = w * sz;
-      if (kind !== 'box') {
+      let x = u * sx * squash[0], y = v * sy, z = w * sz * squash[1];
+      if (kind === 'ball') {
+        const cy = sy / 2, dy = y - cy, l = Math.hypot(x, dy, z) || 1, r = (sx / 2) * (1 + 0.05 * noise(x * 90, y * 90, z * 90));
+        x = (x / l) * r; y = cy + (dy / l) * r; z = (z / l) * r;
+      } else if (!box) {
         const t = Math.pow(v, K.tp);
-        const taper = 1 + (K.top - 1) * t;
+        const taper = 1 + (K.top - 1) * t * 0.35;
         x *= taper; z *= taper;
-        x += (tipX * sx + K.bend * sy) * t * t; z += tipZ * sz * t * t;
-        if (K.sag) y += K.sag * sy * (1 - 4 * u * u) * (v > 0 ? 1 : 0.6);
-        // organic corners: vertical edges and top rims are pulled in
-        const ex = Math.abs(u) > 0.49, ez = Math.abs(w) > 0.49;
-        if (ex && ez) { x *= 1 - K.corner * 0.5; z *= 1 - K.corner * 0.5; }
-        if ((ex || ez) && v > 0.99) y -= K.corner * Math.min(sy, md) * 0.35;
-        // swelling
-        const nb = noise(x * K.f + seed % 97, y * K.f, z * K.f);
-        x *= 1 + K.bulge * nb; z *= 1 + K.bulge * nb;
-        // sharp knocks
-        const j = K.jit * md;
-        x += rng.float(-j, j); z += rng.float(-j, j);
-        if (v > 0) y += rng.float(-j, j) * 0.6;
+        x += (tipX * sx + K.bend * 0.5 * sy) * t * t; z += tipZ * sz * t * t;
+        if (K.sag) y += K.sag * 0.4 * sy * (1 - 4 * u * u) * (v > 0 ? 1 : 0.6);
+        // weathered surface: two octaves of swelling and pitting
+        const f1 = 1 / (md * 1.3), f2 = f1 * 3.1, o = (seed % 97) * 1.7;
+        const nn = noise(x * f1 + o, y * f1, z * f1) + 0.45 * noise(x * f2 - o, y * f2, z * f2 + o);
+        const len = Math.hypot(x, z) || 1;
+        x += (x / len) * amp * nn; z += (z / len) * amp * nn;
+        if (v > 0.999) y += amp * 0.8 * nn;
+        // chips: project onto each cut plane
+        for (const pl of planes) {
+          const e = (x - C[0]) * pl.n[0] + (y - C[1]) * pl.n[1] + (z - C[2]) * pl.n[2] - pl.d;
+          if (e > 0) { x -= pl.n[0] * e; y -= pl.n[1] * e; z -= pl.n[2] * e; }
+        }
         y = Math.max(0, y);
       }
       const id = P.length / 3;
@@ -438,7 +681,7 @@
       const a = t[(e + 1) % 3], b = t[(e + 2) % 3];
       const L = edges.get(a < b ? a + '_' + b : b + '_' + a);
       const o = L.find((g) => g !== f);
-      return o == null || V.dot(normals[f], normals[o]) < 0.62 ? 1 : 0;
+      return o == null || V.dot(normals[f], normals[o]) < 0.8 ? 1 : 0;
     }));
     const n = tris.length * 3;
     const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), bary = new Float32Array(n * 3), cr = new Float32Array(n * 3);
@@ -464,6 +707,31 @@
       this.progDepth = renderer.program(PIECE_VS, DEPTH_FS);
       this.progBoard = renderer.program(BOARD_VS, BOARD_FS);
       this.progPiece = renderer.program(PIECE_VS, PIECE_FS);
+      this.progDust = renderer.program(DUST_VS, DUST_FS);
+      this.progIvy = renderer.program(IVY_VS, IVY_FS);
+      this.progRuinM = renderer.program(RUINM_VS, RUINM_FS);
+      this.progRuinMDepth = renderer.program(RUINM_VS, DEPTH_FS);
+      this.ruinVAO = gl.createVertexArray();
+      gl.bindVertexArray(this.ruinVAO);
+      this.ruinBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.ruinBuf);
+      [[0, 3, 0], [1, 3, 12], [2, 3, 24], [3, 2, 36]].forEach(([l, n, o]) => { gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, n, gl.FLOAT, false, 44, o); });
+      gl.bindVertexArray(null);
+      this.ruinSeen = -1; this.ruinCount = 0; this.ruinTex = null; this.ruinN = 0;
+      this.ivyVAO = gl.createVertexArray();
+      gl.bindVertexArray(this.ivyVAO);
+      this.ivyBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.ivyBuf);
+      for (let i = 0; i < 3; i++) { gl.enableVertexAttribArray(i); gl.vertexAttribPointer(i, 4, gl.FLOAT, false, 48, i * 16); gl.vertexAttribDivisor(i, 1); }
+      gl.bindVertexArray(null);
+      this.ivyCount = 0; this.ivySeen = -1;
+      this.dustVAO = gl.createVertexArray();
+      gl.bindVertexArray(this.dustVAO);
+      this.dustBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.dustBuf);
+      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 20, 16);
+      gl.bindVertexArray(null);
       this.emptyVAO = gl.createVertexArray();
 
       const g = gridMesh(240, 160);
@@ -501,9 +769,13 @@
       this.light = V.norm([-0.5, 0.9, -0.35]);
       this.lightVP = mat4mul(ortho(-1.05, 1.05, -1.05, 1.05, 0.5, 6), lookAt(V.mul(this.light, 3), [0, 0, 0], [0, 1, 0]));
 
-      this.cam = { yaw: 0.0, pitch: 0.78, dist: 1.8, yawT: 0.35, pitchT: 0.78, distT: 1.5 };
+      this.cam = { yaw: 0.0, pitch: 0.78, dist: 1.8, yawT: 0.35, pitchT: 0.78, distT: 1.5, tgt: [0, 0.05, 0], tgtT: [0, 0.05, 0] };
       this.top = false;
       this.drift = true;
+      this.shot = 'orbit';      // current preset view
+      this.auto = false;        // cuts: hard cuts between the presets on their own
+      this.shotLeft = 0;
+      this.creep = 0.03;
     }
 
     buffer(target, data) {
@@ -525,6 +797,48 @@
       return { vao, bufs, count: geo.count };
     }
 
+    /** the model ruin: build its mesh once per session, upload its parts' state every frame */
+    syncRuin() {
+      const R = this.growth && this.growth.ruinM, gl = this.gl;
+      if (!R) return false;
+      const n = R.parts.length;
+      if (R.version !== this.ruinSeen) {
+        this.ruinSeen = R.version;
+        let tris = 0;
+        for (const p of R.parts) tris += p.idx.length / 3;
+        const out = new Float32Array(tris * 3 * 11);
+        let o = 0;
+        R.parts.forEach((p, i) => {
+          const V3 = p.verts, I = p.idx;
+          let cx = 0, cy = 0, cz = 0;
+          for (let k = 0; k < V3.length; k += 3) { cx += V3[k]; cy += V3[k + 1]; cz += V3[k + 2]; }
+          const nv = V3.length / 3; cx /= nv; cy /= nv; cz /= nv;
+          for (let t = 0; t < I.length; t += 3) {
+            const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
+            const A = [V3[a], V3[a + 1], V3[a + 2]], B = [V3[b], V3[b + 1], V3[b + 2]], C = [V3[c], V3[c + 1], V3[c + 2]];
+            let nn = V.norm(V.cross(V.sub(B, A), V.sub(C, A)));
+            const m = [(A[0] + B[0] + C[0]) / 3 - cx, (A[1] + B[1] + C[1]) / 3 - cy, (A[2] + B[2] + C[2]) / 3 - cz];
+            if (V.dot(nn, m) < 0) nn = V.mul(nn, -1);
+            for (const Q of [A, B, C]) {
+              out.set([Q[0] - p.pivot[0], Q[1] - p.pivot[1], Q[2] - p.pivot[2], nn[0], nn[1], nn[2], p.col[0], p.col[1], p.col[2], i, p.plant], o);
+              o += 11;
+            }
+          }
+        });
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.ruinBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, out, gl.STATIC_DRAW);
+        this.ruinCount = tris * 3;
+        if (!this.ruinTex || this.ruinN !== n) {
+          if (this.ruinTex) gl.deleteTexture(this.ruinTex);
+          this.ruinTex = this.r.floatTex(n, 3, gl.RGBA32F, gl.RGBA);
+          this.ruinN = n;
+        }
+      }
+      gl.bindTexture(gl.TEXTURE_2D, this.ruinTex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, n, 3, gl.RGBA, gl.FLOAT, R.state);
+      return true;
+    }
+
     /** keep one mesh per living piece */
     syncMeshes() {
       const G = this.growth;
@@ -544,25 +858,87 @@
     orbit(dyaw, dpitch) {
       const c = this.cam;
       this.top = false;
+      if (this.shot === 'above') this.shot = 'orbit';
       c.yawT += dyaw;
       c.pitchT = Math.max(0.12, Math.min(1.5, c.pitchT + dpitch));
     }
-    zoom(f) { const c = this.cam; c.distT = Math.max(0.6, Math.min(3.6, c.distT * f)); }
+    zoom(f) { const c = this.cam; c.distT = Math.max(0.45, Math.min(3.6, c.distT * f)); }
     toggleTop() {
       const c = this.cam;
-      this.top = !this.top;
-      if (this.top) { this._before = { yaw: c.yawT, pitch: c.pitchT, dist: c.distT }; c.yawT = Math.round(c.yawT / (Math.PI * 2)) * Math.PI * 2; c.pitchT = 1.5; c.distT = 1.75; }
-      else if (this._before) { c.yawT = this._before.yaw; c.pitchT = this._before.pitch; c.distT = this._before.dist; }
+      if (!this.top) { this._before = { shot: this.shot, yaw: c.yawT, pitch: c.pitchT, dist: c.distT, tgt: c.tgtT.slice() }; this.setShot('above'); }
+      else if (this._before) { const b = this._before; this.top = false; this.shot = b.shot; c.yawT = b.yaw; c.pitchT = b.pitch; c.distT = b.dist; c.tgtT = b.tgt; }
+      else this.setShot('orbit');
+    }
+
+    /** a piece worth looking at closely: one still growing, else a tall one */
+    focusPiece() {
+      const list = (this.growth ? this.growth.pieces : []).filter((p) => p.g > 0.25);
+      if (!list.length) return null;
+      const growing = list.filter((p) => p.g < 0.97);
+      const pool = growing.length ? growing : list;
+      let sum = 0;
+      const w = pool.map((p) => (sum += 0.2 + p.size[1] * p.g));
+      const r = Math.random() * sum;
+      return pool[w.findIndex((x) => x >= r)] || pool[0];
+    }
+
+    /**
+     * preset views: 'orbit' (the default three-quarter view), 'above' (straight
+     * down), 'low' (at the height of the pieces), 'side' (from the short end,
+     * along the board), 'close' (close up on one piece).
+     * cut = jump there at once instead of gliding.
+     */
+    setShot(name, cut) {
+      const c = this.cam, TAU = Math.PI * 2;
+      const turn = Math.round(c.yawT / TAU) * TAU;
+      let tgt = [0, 0.05, 0];
+      if (name === 'close') {
+        const p = this.focusPiece();
+        if (!p) name = 'low';
+        else {
+          tgt = [p.pos[0], p.pos[1] + p.size[1] * p.g * 0.55, p.pos[2]];
+          c.yawT += (Math.random() - 0.5) * 1.6;
+          c.pitchT = 0.22 + Math.random() * 0.3;
+          c.distT = 0.5 + Math.random() * 0.15;
+        }
+      }
+      this.shot = name;
+      this.top = name === 'above';
+      if (name === 'orbit') { c.pitchT = 0.78; c.distT = 1.5; }
+      else if (name === 'above') { c.yawT = turn; c.pitchT = 1.5; c.distT = 1.75; tgt = [0, 0, 0]; }
+      else if (name === 'low') { c.pitchT = 0.13; c.distT = 1.2; tgt = [0, 0.1, 0]; }
+      else if (name === 'side') { c.yawT = turn + (Math.random() < 0.5 ? 1 : -1) * Math.PI / 2; c.pitchT = 0.3; c.distT = 1.15; tgt = [0, 0.08, 0]; }
+      c.tgtT = tgt;
+      if (cut) { c.yaw = c.yawT; c.pitch = c.pitchT; c.dist = c.distT; c.tgt = tgt.slice(); }
+    }
+
+    setAuto(on) {
+      this.auto = on;
+      if (on) this.shotLeft = 0;
     }
 
     updateCamera(dt, aspectView) {
       const c = this.cam, k = 1 - Math.exp(-dt * 7);
-      // left alone, it turns very slowly around its body
-      if (!this.top && this.drift) c.yawT += dt * 0.012;
+      if (this.auto) {
+        // cuts: every 8-15 s a hard cut to another preset; inside a shot the camera creeps
+        this.shotLeft -= dt;
+        if (this.shotLeft <= 0) {
+          const pool = ['orbit', 'low', 'side', 'close', 'close', 'above'].filter((s) => s !== this.shot || s === 'close');
+          this.setShot(pool[Math.floor(Math.random() * pool.length)], true);
+          this.shotLeft = 8 + Math.random() * 7;
+          this.creep = (Math.random() < 0.5 ? 1 : -1) * (0.025 + Math.random() * 0.03);
+        }
+        c.yawT += dt * this.creep;
+        c.distT *= Math.exp(-dt * 0.012);
+      } else if (!this.top && this.drift) {
+        // left alone, it turns very slowly around its body
+        c.yawT += dt * 0.012;
+      }
       c.yaw += (c.yawT - c.yaw) * k; c.pitch += (c.pitchT - c.pitch) * k; c.dist += (c.distT - c.dist) * k;
+      for (let i = 0; i < 3; i++) c.tgt[i] += (c.tgtT[i] - c.tgt[i]) * k;
       const fit = Math.max(1, 1.25 / Math.max(0.4, aspectView));
       const d = c.dist * fit;
-      const target = [0, 0.05, 0];
+      const target = c.tgt;
       const eye = [target[0] + d * Math.sin(c.yaw) * Math.cos(c.pitch), target[1] + d * Math.sin(c.pitch), target[2] + d * Math.cos(c.yaw) * Math.cos(c.pitch)];
       this.fov = 0.62;
       this.eye = eye;
@@ -601,7 +977,8 @@
       let n = 0;
       for (const p of list) {
         if (n >= MAXB) break;
-        if (p.g < 0.03) continue;
+        if (p.g < 0.03 || p.pos[1] + p.size[1] * p.g < 0.001) continue;   // sunk below the ground
+        if (p.ruinOnly && (p.pos[1] > 0.002 || p.tint)) continue;          // the ruin roots only by its foot
         const w = 0.35 + 0.65 * p.g;
         this.boxData[n * 4] = p.pos[0]; this.boxData[n * 4 + 1] = p.pos[1]; this.boxData[n * 4 + 2] = p.pos[2]; this.boxData[n * 4 + 3] = p.yaw;
         const r1 = MAXB * 4 + n * 4;
@@ -649,6 +1026,14 @@
         const e = p.g, w = 0.35 + 0.65 * e;
         this.drawMesh(ud, m, p.pos, [w, Math.max(0.001, e), w], p.yaw, { seed: p.seed % 1000 / 100 });
       }
+      if (this.syncRuin()) {
+        gl.useProgram(this.progRuinMDepth.p);
+        gl.uniformMatrix4fv(this.progRuinMDepth.u.u_viewProj, false, this.lightVP);
+        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.ruinTex); gl.uniform1i(this.progRuinMDepth.u.u_state, 3);
+        gl.bindVertexArray(this.ruinVAO);
+        gl.drawArrays(gl.TRIANGLES, 0, this.ruinCount);
+        gl.bindVertexArray(null);
+      }
       gl.disable(gl.POLYGON_OFFSET_FILL);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -675,6 +1060,7 @@
       gl.uniformMatrix4fv(u.u_viewProj, false, this.viewProj);
       gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, r.surface.tex); gl.uniform1i(u.u_surface, 5);
       gl.uniform3fv(u.u_inkEdge, c.inkEdge);
+      gl.uniform3fv(u.u_ink, c.ink);
       gl.uniform3fv(u.u_ground, ground);
       gl.uniform3fv(u.u_eye, this.eye);
       gl.bindVertexArray(this.boardVAO);
@@ -707,7 +1093,63 @@
         }
         // it rises out of the surface: thin at first, then filling out
         const e = p.g, w = 0.35 + 0.65 * e;
-        this.drawMesh(u, m, p.pos, [w, Math.max(0.001, e), w], p.yaw, { seed: p.seed % 1000 / 100, g: e, shake: shake * shake, self: p._box ?? -1 });
+        this.drawMesh(u, m, p.pos, [w, Math.max(0.001, e), w], p.yaw, { seed: p.seed % 1000 / 100, mode: p.ruinOnly ? 1 : 0, tint: p.tint || 0, g: p.ruinOnly ? 1 : e, shake: Math.max(shake * shake, p.shake || 0), self: p._box ?? -1 });
+      }
+
+      // the ruin from its model
+      if (this.growth && this.growth.ruinM && this.ruinTex) {
+        P = this.progRuinM; u = P.u;
+        gl.useProgram(P.p);
+        this.bindScene(P, time);
+        gl.uniformMatrix4fv(u.u_viewProj, false, this.viewProj);
+        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.ruinTex); gl.uniform1i(u.u_state, 3);
+        gl.uniform3fv(u.u_fog, fog);
+        gl.uniform3fv(u.u_eye, this.eye);
+        gl.bindVertexArray(this.ruinVAO);
+        gl.drawArrays(gl.TRIANGLES, 0, this.ruinCount);
+        gl.bindVertexArray(null);
+      }
+
+      // the ruin's ivy
+      const IV = this.growth && this.growth.ivy;
+      if (IV && IV.leaves.length) {
+        if (IV.version !== this.ivySeen) {
+          this.ivySeen = IV.version;
+          const L = IV.leaves, buf = new Float32Array(L.length * 12);
+          L.forEach((l, i) => buf.set([l.c[0], l.c[1], l.c[2], l.kind, l.n[0], l.n[1], l.n[2], l.shade, l.size, l.rot, l.fall, 0], i * 12));
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.ivyBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
+          this.ivyCount = L.length;
+        }
+        P = this.progIvy; u = P.u;
+        gl.useProgram(P.p);
+        this.bindScene(P, time);
+        gl.uniformMatrix4fv(u.u_viewProj, false, this.viewProj);
+        gl.uniform1f(u.u_t, this.growth.t);
+        gl.uniform3fv(u.u_fog, fog);
+        gl.uniform3fv(u.u_eye, this.eye);
+        gl.bindVertexArray(this.ivyVAO);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.ivyCount);
+      }
+
+      // the ruin's dust
+      const D = this.growth && this.growth.dust;
+      if (D && D.n > 0) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.dustBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, D.data.subarray(0, D.n * 5), gl.DYNAMIC_DRAW);
+        P = this.progDust; u = P.u;
+        gl.useProgram(P.p);
+        gl.uniformMatrix4fv(u.u_viewProj, false, this.viewProj);
+        gl.uniform1f(u.u_px, gl.drawingBufferHeight * 0.5 / Math.tan(this.fov * 0.5));
+        gl.uniform3fv(u.u_dustA, [0.6, 0.53, 0.42]);
+        gl.uniform3fv(u.u_dustB, [0.43, 0.38, 0.31]);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        gl.bindVertexArray(this.dustVAO);
+        gl.drawArrays(gl.POINTS, 0, D.n);
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
       }
 
       // soft falloff and grain over the whole view
@@ -731,6 +1173,7 @@
       gl.uniform1f(u.u_mode, o.mode || 0);
       gl.uniform1f(u.u_g, o.g ?? 1);
       gl.uniform1f(u.u_shake, o.shake || 0);
+      gl.uniform1f(u.u_tint, o.tint || 0);
       gl.uniform1i(u.u_self, o.self ?? -1);
       gl.bindVertexArray(m.vao);
       gl.drawArrays(gl.TRIANGLES, 0, m.count);

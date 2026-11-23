@@ -24,12 +24,14 @@
 
   const daemon = new RUIN.Daemon({ aspect: renderer.aspect });
   const clock = { held: false };
-  const synth = new RUIN.Synth();
-  const sonifier = new RUIN.Sonifier(daemon, synth);
+  // sound is switched off for now: no synth, no sonifier (js/sound/ stays for later)
+  const synth = null;
+  const sonifier = null;
   const ui = new RUIN.Interface({ daemon, canvas, clock, synth });
   const growth = new RUIN.Growth({ daemon, aspect: renderer.aspect });
   renderer.scene.growth = growth;
   const view = new RUIN.View({ daemon, renderer, growth, ui, canvas, clock });
+  const cameras = new RUIN.Cameras({ daemon, growth });
 
   window.addEventListener('resize', () => renderer.resize());
 
@@ -44,7 +46,8 @@
     growth.update(dt);
     ui.update(raw);
     view.update(raw);
-    sonifier.update(raw);
+    cameras.update(raw);
+    sonifier?.update(raw);
     const t0 = performance.now();
     renderer.render(daemon, dt, time);
     renderer.measure(raw * 1000 || performance.now() - t0);
@@ -53,5 +56,5 @@
   requestAnimationFrame(frame);
 
   window.daemon = daemon;
-  window.RUIN.app = { daemon, renderer, ui, synth, sonifier, growth, view };
+  window.RUIN.app = { daemon, renderer, ui, synth, sonifier, growth, view, cameras };
 })(window.RUIN);

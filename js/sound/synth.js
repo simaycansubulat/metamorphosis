@@ -8,17 +8,16 @@
  *   click   a dry contact: a few milliseconds of band-passed noise
  *   tap     a hard, small mechanical tick (two inharmonic partials)
  *   knock   a resonant body struck once (wood, clay, hollow piece)
- *   thud    a low, dull impact with a fast pitch drop (weight, arrival)
- *   pulse   an organic swelling throb, soft-edged (breath, membrane)
+ *   thud    a heavy, dense contact: a block set down on stone (weight, arrival)
+ *   pulse   a soft breath of high noise, like a brush over paper
  *   rattle  an irregular burst of contacts (scraping, friction, agitation)
  *
  * Every voice takes `sharp` (0..1): sharper → harder attack, brighter
  * filter, shorter body. The sonifier derives it from the will's insistence.
  *
- * HARSH (0..1, default 0.8) roughens everything: every voice is pushed
- * sharper, and the master runs through a gritty, slightly asymmetric
- * saturation with a coarse quantiser and a hard presence boost, so even
- * soft events scrape.
+ * HARSH (0..1, default 0.3) roughens everything: every voice is pushed
+ * sharper, and the master runs through a light asymmetric saturation and a
+ * presence boost. Everything under 120 Hz is cut, so nothing rumbles.
  * ------------------------------------------------------------------------- */
 (function (RUIN) {
   'use strict';
@@ -30,7 +29,7 @@
       this.ctx = null;
       this.enabled = true;
       this.level = 0.75;   // user volume 0..1
-      this.harsh = 0.8;    // grit of the whole voice 0..1
+      this.harsh = 0.3;    // grit of the whole voice 0..1
     }
 
     /** every voice is pushed toward hard, bright, short */
@@ -69,16 +68,16 @@
       const comp = ctx.createDynamicsCompressor();
       comp.threshold.value = -18; comp.ratio.value = 8; comp.attack.value = 0.001; comp.release.value = 0.08;
       const hp = ctx.createBiquadFilter();
-      hp.type = 'highpass'; hp.frequency.value = 45;
+      hp.type = 'highpass'; hp.frequency.value = 120;   // nothing below: no rumble
       // grit: drive into an asymmetric saturator with a coarse quantiser
       const drive = ctx.createGain(); drive.gain.value = 1 + 5 * this.harsh;
       const shaper = ctx.createWaveShaper();
-      const N = 4096, curve = new Float32Array(N), k = 4 + 18 * this.harsh, steps = 40 - 26 * this.harsh;
+      const N = 4096, curve = new Float32Array(N), k = 4 + 18 * this.harsh;
       for (let i = 0; i < N; i++) {
         const x = (i / (N - 1)) * 2 - 1;
         let y = ((1 + k) * x) / (1 + k * Math.abs(x));
         y += 0.12 * this.harsh * x * x;                       // asymmetry → rasp
-        curve[i] = Math.round(y * steps) / steps;              // crushed, splintered tails
+        curve[i] = y;
       }
       shaper.curve = curve; shaper.oversample = '2x';
       const presence = ctx.createBiquadFilter();
@@ -170,43 +169,28 @@
 
     thud(t, { freq = 70, gain = 0.5, pan = 0, sharp = 0.3, decay = 0.16 } = {}) {
       if (!this.ready) return;
-      sharp = this.edge(sharp);
-      const ctx = this.ctx;
-      const o = ctx.createOscillator();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(freq * (2.2 + 1.5 * sharp), t);
-      o.frequency.exponentialRampToValueAtTime(freq, t + 0.025);
-      o.frequency.exponentialRampToValueAtTime(freq * 0.7, t + decay);
-      const dec = decay * (1 - 0.4 * sharp);
-      const g = this.vca(t, gain, 0.002, dec);
-      o.connect(g); o.start(t); o.stop(t + dec + 0.05);
-      // dull contact noise on top
-      const n = this.noiseSrc(t, 0.04);
-      const nf = this.lp(500 + 2500 * sharp);
-      const ng = this.vca(t, gain * (0.15 + 0.35 * sharp), 0.001, 0.02 + 0.02 * (1 - sharp));
-      n.connect(nf); nf.connect(ng);
-      const sum = ctx.createGain(); g.connect(sum); ng.connect(sum);
-      this.out(pan, sum);
+      // weight, arrival: a heavy block set down on stone. No low sine and no
+      // pitch glide (those read as a body noise), just a dense, dry contact.
+      const w = clamp((freq - 40) / 40, 0, 1);              // lighter → higher
+      this.knock(t, { freq: 170 + 130 * w, gain: gain * 0.75, pan, sharp, hollow: 0.15 + 0.2 * (1 - clamp(decay / 0.3, 0, 1)) });
+      this.click(t + 0.002, { freq: 1400 + 900 * w, gain: gain * 0.12, pan, sharp });
     }
 
     pulse(t, { freq = 160, gain = 0.25, pan = 0, len = 0.22, sharp = 0 } = {}) {
       if (!this.ready) return;
       sharp = this.edge(sharp);
-      // a soft throb: filtered noise and a low partial swelling and receding
+      // a soft breath: a short swell of band-passed noise high above any body
+      // resonance, like a brush passing over paper or dry stone
+      len = Math.min(len, 0.35);
       const n = this.noiseSrc(t, len + 0.05);
-      const f = this.lp(freq * (2 + 4 * sharp), 4);
-      f.frequency.setValueAtTime(freq * 0.8, t);
-      f.frequency.linearRampToValueAtTime(freq * (2.5 + 4 * sharp), t + len * 0.35);
-      f.frequency.exponentialRampToValueAtTime(freq * 0.6, t + len);
-      const a = len * (0.35 - 0.25 * sharp);
-      const g = this.vca(t, gain, a, len - a);
-      const o = this.ctx.createOscillator();
-      o.type = 'sine'; o.frequency.setValueAtTime(freq * 0.5, t); o.frequency.linearRampToValueAtTime(freq * 0.42, t + len);
-      const og = this.vca(t, gain * 0.6, a, len - a);
-      o.connect(og); o.start(t); o.stop(t + len + 0.05);
+      const centre = 1100 + freq * 5;
+      const f = this.bp(centre, 1.2 + 2 * sharp);
+      f.frequency.setValueAtTime(centre * 0.8, t);
+      f.frequency.linearRampToValueAtTime(centre * 1.15, t + len);
+      const a = len * (0.4 - 0.25 * sharp);
+      const g = this.vca(t, gain * 0.55, a, len - a);
       n.connect(f); f.connect(g);
-      const sum = this.ctx.createGain(); g.connect(sum); og.connect(sum);
-      this.out(pan, sum);
+      this.out(pan, g);
     }
 
     rattle(t, { n = 5, span = 0.12, gain = 0.12, pan = 0, sharp = 0.5, freq = 2600, fall = 0 } = {}) {

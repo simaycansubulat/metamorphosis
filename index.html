@@ -25,9 +25,11 @@
       <span id="clock"></span>
     </div>
     <div class="mark mark--controls">
-      <button type="button" id="btn-sound" title="sound (m)" aria-pressed="true">sound</button>
-      <input type="range" id="volume" min="0" max="1" step="0.01" value="0.75" aria-label="volume" title="volume">
+      <button type="button" id="btn-sound" title="sound (m)" aria-pressed="false" hidden>sound</button>
+      <input type="range" id="volume" min="0" max="1" step="0.01" value="0.75" aria-label="volume" title="volume" hidden>
       <button type="button" id="btn-view" title="look from above (t)" aria-pressed="false">above</button>
+      <button type="button" id="btn-cuts" title="camera cuts (c) · views 1-5" aria-pressed="false">cuts</button>
+      <button type="button" id="btn-cams" title="webcams: read a real construction (w)" aria-pressed="false">cams</button>
       <button type="button" id="btn-hold" title="hold (space)">hold</button>
       <button type="button" id="btn-new" title="new session (n)">anew</button>
       <button type="button" id="btn-end" title="end session (esc)">end</button>
@@ -53,6 +55,7 @@
   <script src="js/daemon/composition.js"></script>
   <script src="js/daemon/mind.js"></script>
   <script src="js/daemon/daemon.js"></script>
+  <script src="js/daemon/ruin-model.js"></script>
   <script src="js/daemon/growth.js"></script>
   <script src="js/render/shaders.js"></script>
   <script src="js/render/scene.js"></script>
@@ -61,6 +64,7 @@
   <script src="js/sound/sonifier.js"></script>
   <script src="js/ui/interface.js"></script>
   <script src="js/ui/view.js"></script>
+  <script src="js/ui/cameras.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

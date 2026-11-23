@@ -141,6 +141,33 @@ body.is-session #surface:active { cursor: grabbing; }
   font-size: 12px; letter-spacing: 0.12em; line-height: 2;
 }
 
+/* ---- cameras (W) ------------------------------------------------------------ */
+.cams {
+  position: fixed;
+  top: 16px; right: 16px;
+  width: min(340px, calc(100vw - 32px));
+  max-height: calc(100vh - 80px);
+  overflow: auto;
+  padding: 10px 12px;
+  background: rgba(236, 227, 210, 0.94);
+  border: 1px solid var(--mark-faint);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--mark);
+  z-index: 5;
+}
+.cams__head, .cams__row { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+.cams__head { justify-content: space-between; letter-spacing: 0.22em; }
+.cams__slot { margin-top: 8px; }
+.cams canvas { width: 100%; height: auto; display: block; cursor: crosshair; background: #d9cfbd; }
+.cams select { flex: 1; min-width: 0; font: inherit; background: transparent; color: var(--ink); border: 1px solid var(--mark-faint); }
+.cams button { appearance: none; background: none; border: 1px solid var(--mark-faint); padding: 3px 8px; font: inherit; color: var(--ink); cursor: pointer; }
+.cams button:hover { border-color: var(--ink); }
+.cams [data-close] { border: 0; font-size: 14px; }
+.cams [data-hint] { color: #b0301e; }
+.cams input[type="range"] { flex: 1; accent-color: var(--ink); }
+.cams__status { margin: 6px 0 0; min-height: 1.4em; color: var(--ink); }
+
 @media (max-width: 520px) {
   .mark--state { top: 16px; left: 16px; gap: 10px; }
   #volume { width: 44px; }

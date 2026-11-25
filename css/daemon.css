@@ -177,3 +177,42 @@ body.is-session #surface:active { cursor: grabbing; }
 @media (prefers-reduced-motion: reduce) {
   .whisper { animation: none; }
 }
+
+/* ---- the ruin's history, a few words under the scene ------------------- */
+.story {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: 11vh;
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  color: var(--mark);
+  opacity: 0;
+  transition: opacity 0.7s ease;
+  pointer-events: none;
+}
+.story.is-on { opacity: 1; }
+
+/* ---- TOUCH look (V): light in a dark space ------------------------------ */
+body.is-touch { background: #000; color: rgba(205, 225, 235, 0.6); }
+body.is-touch .story { color: rgba(215, 235, 245, 0.78); }
+body.is-touch .instrument, body.is-touch .threshold, body.is-touch .notes { color: rgba(205, 225, 235, 0.55); }
+body.is-touch button { color: inherit; }
+
+/* ---- the game: which human thing, whose turn, how far --------------------- */
+.hud {
+  position: fixed; left: 22px; bottom: 20px; display: flex; align-items: center; gap: 16px;
+  font-size: 11px; letter-spacing: 0.16em; color: rgba(205, 225, 235, 0.6);
+  opacity: 0; transition: opacity 1.2s ease; pointer-events: none;
+}
+.hud.is-on { opacity: 1; }
+.hud-name { display: flex; align-items: center; gap: 9px; color: var(--c); }
+.hud-name::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--c); box-shadow: 0 0 8px var(--c); }
+.hud-turn { display: flex; gap: 7px; }
+.hud-turn i { width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--c); opacity: 0.45; }
+.hud-turn i.is-turn { background: var(--c); opacity: 1; box-shadow: 0 0 6px var(--c); }
+.hud::after {
+  content: ''; position: absolute; left: 0; bottom: -8px; height: 1px; width: calc(var(--left, 0) * 100%);
+  background: var(--c); opacity: 0.7;
+}

@@ -35,7 +35,7 @@
       // slow the FIELD is repainted less often, never at a lower resolution
       this.quality = Math.min(window.devicePixelRatio || 1, 2);
       this.maxQuality = this.quality;
-      this.minQuality = Math.min(1, this.quality);
+      this.minQuality = Math.max(1, this.quality * 0.9);           // stay sharp: never drop far below the screen's density
       this.fieldEvery = 1;
       this.frameMs = 16;
       this.slowFrames = 0;

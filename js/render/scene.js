@@ -142,8 +142,101 @@
   in vec2 v_uv;
   out vec4 outColor;
   void main() {
-    outColor = vec4(u_ground, 1.0);
+    outColor = vec4(u_ground, 0.0);                 // alpha 0: empty space (read by the TOUCH pass)
   }`;
+
+  /* TOUCH: the whole view re-read as light in a dark space (press V to switch).
+   * Whatever is not empty ground becomes a halftone grid of light points; its
+   * contours become glowing lines; only fire and pigment keep their colour; and
+   * every movement leaves a fading trail (feedback of the previous frame). */
+  const POST_FS = HEAD + RUIN.shaders.NOISE + `
+  uniform sampler2D u_scene, u_prev;
+  uniform vec3 u_ground, u_tcol;
+  uniform vec2 u_px;
+  uniform float u_cell, u_time, u_burst, u_tamt;
+  in vec2 v_uv;
+  out vec4 outColor;
+  float lumOf(vec3 c) { return dot(c, vec3(0.3, 0.59, 0.11)); }
+  bool isGuide(float a) { return a > 0.86 && a < 0.94; }
+  // how much light a place carries: objects by their own light, the guide piece glowing,
+  // the ground only where something marks it
+  float lightOf(vec4 s) {
+    if (isGuide(s.a)) return 0.55 + 0.4 * (0.5 + 0.5 * sin(u_time * 4.0));
+    if (s.a > 0.75) return mix(0.16 + 0.55 * lumOf(s.rgb), 0.18 + 0.62 * lumOf(s.rgb), u_tamt);
+    if (s.a > 0.25) return clamp(length(s.rgb - u_ground) * 1.1 - 0.16, 0.0, 1.0) * 0.35 * (1.0 - 0.7 * u_tamt);
+    return 0.0;
+  }
+  vec2 flow(vec2 p, float t) {
+    return vec2(snoise(p * 2.2 + vec2(0.0, t * 0.07)), snoise(p * 2.2 + vec2(5.2, -t * 0.06)));
+  }
+  void main() {
+    float t = u_time;
+    vec2 aspect = vec2(u_px.y / u_px.x, 1.0);
+    vec2 uv = v_uv + 0.004 * flow(v_uv * aspect, t);
+    float v = 0.0, hot = 0.0, guide = 0.0;
+    vec3 hue = vec3(0.0);
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+      vec2 o = vec2(float(i), float(j)) * u_px * mix(3.5, 2.4, u_tamt);   // soft masses of light, not boxes
+      vec4 s = texture(u_scene, uv + o);
+      float w = (i == 0 && j == 0) ? 2.0 : 1.0;
+      v += lightOf(s) * w;
+      if (isGuide(s.a)) guide += w;
+      float mx = max(s.r, max(s.g, s.b)), mn = min(s.r, min(s.g, s.b));
+      float h = smoothstep(0.45, 0.8, (mx - mn) / max(mx, 1e-3)) * step(0.25, s.a) * (isGuide(s.a) ? 0.0 : 1.0);
+      hot += h * w; hue += s.rgb / max(mx, 1e-3) * h * w;
+    }
+    v /= 10.0; hot /= 10.0; guide /= 10.0; hue /= max(hot * 10.0, 1e-3);
+    float solid = step(0.75, texture(u_scene, uv).a);
+    // its reach: light gathered from far around (where tendrils may grow)
+    float reach = 0.0;
+    for (int k = 0; k < 8; k++) {
+      float a = float(k) * 0.7854 + t * 0.05, r = (k % 2 == 0 ? 30.0 : 64.0);
+      reach += lightOf(texture(u_scene, uv + vec2(cos(a), sin(a)) * u_px * r));
+    }
+    reach = max(reach / 8.0 * 1.6, v);
+    // tendrils: thin nervous threads of light writhing out of every form
+    vec2 q = v_uv * aspect * 3.2;
+    q += 0.35 * vec2(snoise(q * 0.9 + vec2(t * 0.32, 0.0)), snoise(q * 0.9 + vec2(4.0, -t * 0.27)));
+    q += 0.018 * vec2(snoise(q * 7.0 + t * 5.0), snoise(q * 7.0 - t * 4.3 + 9.0)) * (1.0 + 2.0 * u_burst);
+    float r1 = 1.0 - abs(snoise(q + vec2(0.0, t * 0.16)));
+    float r2 = 1.0 - abs(snoise(q * 2.3 + 11.0 - vec2(t * 0.22, 0.0)));
+    float r3 = 1.0 - abs(snoise(q * 5.1 + 23.0 + vec2(0.0, t * 0.3)));
+    float threads = pow(r1, 9.0) + 0.8 * pow(r2, 12.0) * smoothstep(0.8, 0.97, r1 + 0.12) + 0.5 * pow(r3, 16.0);
+    threads *= 0.75 + 0.25 * snoise(q * 3.0 + t * 0.6);
+    float grow = smoothstep(0.03 - 0.02 * u_burst, 0.35 - 0.2 * u_burst, reach) * (0.6 + 0.4 * snoise(q * 0.5 + t * 0.09));
+    float wisp = smoothstep(0.08, 0.5, reach) * 0.22 * (0.5 + 0.5 * snoise(q * 1.4 - t * 0.12));
+    float pulse = pow(0.5 + 0.5 * snoise(vec2(t * 1.3, 7.0)), 3.0);
+    v *= 0.85 + 0.45 * pulse + 1.4 * u_burst;
+    v += reach * u_burst * 0.9;
+    float smoke = 1.0 - u_tamt * (0.3 + 0.35 * solid);               // in a game the threads stay mostly around the form
+    v = max(v, (threads * grow * (1.1 + 0.5 * pulse + u_burst) + wisp) * smoke);
+    // trails: last frame's light, blurred, drifting, fading like smoke
+    vec2 fuv = (v_uv - 0.5) * 0.9985 + 0.5 + 0.0035 * flow(v_uv * aspect * 1.2, t * 1.6) + vec2(0.0, -0.0006);
+    vec2 bl = u_px * 2.0;
+    float pv = (texture(u_prev, fuv).a * 2.0 + texture(u_prev, fuv + vec2(bl.x, 0.0)).a + texture(u_prev, fuv - vec2(bl.x, 0.0)).a
+              + texture(u_prev, fuv + vec2(0.0, bl.y)).a + texture(u_prev, fuv - vec2(0.0, bl.y)).a) / 6.0;
+    v = max(v, pv * mix(0.95, 0.91, u_tamt) - 0.008);
+    // grain: every grain of the screen is lit or not, more often where there is more light
+    float gate = smoothstep(0.04, 0.12, max(reach, pv));
+    vec2 g = floor(gl_FragCoord.xy / u_cell);
+    float n = hash12(g + vec2(floor(t * 20.0) * 17.0, floor(t * 20.0) * 31.0));
+    float haze = (0.05 + 0.08 * (0.5 + 0.5 * snoise(vec2(t * 0.05, 3.0))) + 0.3 * u_burst * smoothstep(0.0, 0.25, reach)) * smoothstep(0.06, 0.3, reach);
+    float p = (haze + (1.0 - haze) * pow(clamp((v - 0.045) / 0.955, 0.0, 1.0), 0.85)) * gate;
+    float on = step(n, p);
+    float lvl = (0.32 + 0.68 * clamp(v * 1.3, 0.0, 1.0)) * (0.75 + 0.25 * hash12(g * 1.7 + floor(t * 20.0)));
+    // colour: cold light in the history; the game's colour once the game begins; the guide piece brightest
+    vec3 base = mix(vec3(0.86, 0.88, 0.9), u_tcol, u_tamt);
+    base = mix(base, mix(u_tcol, vec3(1.0), 0.35), clamp(guide * 1.5, 0.0, 1.0) * u_tamt);
+    vec3 grain = mix(base, hue * vec3(1.0, 0.82, 0.7), clamp(hot * 1.5, 0.0, 1.0));
+    float sv = clamp((v - 0.045) / 0.955, 0.0, 1.0) * gate;
+    vec3 col = grain * (on * lvl * 0.78 + sv * 0.32 + guide * 0.25);
+    outColor = vec4(col, v);
+  }`;
+  const COPY_FS = HEAD + `
+  uniform sampler2D u_tex;
+  in vec2 v_uv;
+  out vec4 outColor;
+  void main() { outColor = texture(u_tex, v_uv); }`;
 
   /* over everything: a soft falloff and paper grain (multiplied) */
   const VIGNETTE_FS = HEAD + RUIN.shaders.NOISE + `
@@ -173,7 +266,7 @@
   }`;
 
   const BOARD_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
-  uniform sampler2D u_surface;
+  uniform sampler2D u_surface, u_marks;
   uniform vec3 u_inkEdge, u_ink, u_fog, u_eye, u_ground;
   in vec2 v_uv;
   in vec3 v_world;
@@ -253,6 +346,12 @@
     vec3 n = normalize(vec3(-(hR - hL) * k / (3.0 * tx.x * u_aspect), 1.0, (hU - hD) * k / (3.0 * tx.y)));
     col *= 1.0 + (dot(n, u_light) - u_light.y) * 0.8 * show;
 
+    // what the daemon left on the ground: grit of the ruin, footprints, paint
+    vec2 mj = v_uv + 0.0012 * vec2(snoise(v_uv * 90.0), snoise(v_uv * 90.0 + 4.0));
+    vec4 mk = texture(u_marks, mj);
+    float tooth = 0.75 + 0.25 * fbm(v_uv * 160.0);
+    col = mix(col, mk.rgb, clamp(mk.a * tooth, 0.0, 1.0));
+
     // the pieces' shadows bleed into the linen like soot
     vec3 gp = vec3(v_world.x, 0.0, v_world.z) + 0.0035 * vec3(snoise(v_uv * 46.0), 0.0, snoise(v_uv * 46.0 + 7.3));
     float lit = shadowAt(gp, 0.0015, 2.5 + 2.0 * (fbm(v_uv * 12.0) * 0.5 + 0.5));
@@ -265,7 +364,7 @@
     // no edge, no slab: the ground simply continues
     vec2 ed = min(v_uv, 1.0 - v_uv) * vec2(u_aspect, 1.0);
     col = mix(u_ground, col, smoothstep(0.0, 0.1, min(ed.x, ed.y)));
-    outColor = vec4(col, 1.0);
+    outColor = vec4(col, 0.5);                      // alpha 0.5: ground (read by the TOUCH pass)
   }`;
 
   /* a piece of the daemon's body (or the board's edge) */
@@ -293,6 +392,7 @@
   const PIECE_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
   uniform sampler2D u_surface, u_will;
   uniform vec4  u_gridRect;
+  uniform float u_burn, u_guide;
   uniform float u_seed, u_g, u_mode, u_tint;   // mode: 0 piece · 1 the old ruin · 2 board edge; tint (ruin): 0 stone · 1 pale · 2 brick · 3 mortar
   uniform int   u_self;
   uniform vec3  u_paperDeep, u_cream, u_ink, u_inkEdge, u_signal, u_washA, u_washB, u_tissue, u_fog, u_eye;
@@ -367,8 +467,27 @@
     stone *= 1.0 - pits * 0.32;
     col = mix(stone, col, 0.32 + 0.4 * pat.a);
 
+    // --- the new body is grown out of the ruin's own matter: its limestone, ochre and
+    // pale stones, and the courses and joints of the old wall still running through it
+    if (u_mode < 0.5) {
+      float cy = wp.y / 0.017 + 0.5 * vnoise3(sp * 16.0);
+      float row = floor(cy), fy = fract(cy);
+      float al = dot(wp.xz, vec2(0.98, 0.2)) / 0.03 + hash12(vec2(row, u_seed)) * 3.0;
+      float fx = fract(al), cell = hash12(vec2(row * 1.7 + floor(al), u_seed * 5.3));
+      vec3 lime = mix(vec3(0.74, 0.71, 0.65), vec3(0.6, 0.57, 0.52), cell);
+      lime = mix(lime, mix(vec3(0.74, 0.65, 0.5), vec3(0.6, 0.51, 0.4), cell), step(0.62, fract(cell * 7.3)));
+      lime = mix(lime, vec3(0.88, 0.85, 0.77), step(0.86, fract(cell * 13.1)));
+      lime *= 0.86 + 0.16 * mottle + 0.08 * (grainN - 0.5);
+      lime *= 1.0 - pits * 0.4;
+      float side = 1.0 - smoothstep(0.45, 0.7, tw.y);
+      float joint = max(1.0 - smoothstep(0.0, 0.09, min(fy, 1.0 - fy)), 1.0 - smoothstep(0.0, 0.06, min(fx, 1.0 - fx))) * side;
+      lime = mix(lime, vec3(0.36, 0.33, 0.28), joint * 0.75);
+      col = mix(col, lime, 0.66);
+    }
+
     // --- the old ruin: weathered limestone rubble, grime, lichen, moss; pale arch, red brick, mortar ---
     float isRuin = step(0.5, u_mode) * (1.0 - step(1.5, u_mode));
+    float ember = 0.0;
     if (isRuin > 0.5) {
       float tone = hash12(vec2(u_seed * 7.1, 2.0));
       float t2 = hash12(vec2(u_seed * 3.7, 9.0));
@@ -389,6 +508,13 @@
       lime = mix(lime, mix(vec3(0.86, 0.85, 0.78), vec3(0.7, 0.64, 0.38), step(0.5, hash12(floor(wp.xz * 300.0)))), lich * 0.45 * step(u_tint, 0.5));
       float moss = smoothstep(0.55, 0.8, vnoise3(wp * 40.0 - u_seed)) * (max(n.y, 0.0) * 0.8 + (1.0 - smoothstep(0.0, 0.07, wp.y)));
       col = mix(lime, vec3(0.3, 0.36, 0.17), clamp(moss, 0.0, 1.0) * 0.6 * step(u_tint, 0.5));
+      // fire: the stone blackens with soot, embers glow in its cracks
+      if (u_burn > 0.0) {
+        float sootN = smoothstep(0.25, 0.75, vnoise3(wp * 55.0 + u_seed));
+        col = mix(col, vec3(0.09, 0.08, 0.07), u_burn * (0.6 + 0.35 * sootN));
+        float flick = 0.55 + 0.45 * sin(u_time * 11.0 + u_seed * 7.0 + wp.y * 80.0);
+        ember = (u_burn * (1.0 - u_burn) * 2.4 + 0.08 * u_burn) * smoothstep(0.62, 0.9, vnoise3(wp * 190.0 - vec3(0.0, u_time * 0.4, 0.0))) * flick;
+      }
     }
 
     // each facet catches the pigment a little differently: sharp, mineral
@@ -417,11 +543,13 @@
     float lit = 0.5 + 0.55 * max(ndl, 0.0) * sh + 0.08 * n.y + isRuin * 0.24;   // the ruin stands in daylight
     lit *= 0.75 + 0.25 * smoothstep(0.0, 0.03, wp.y);
     col *= lit;
+    col += vec3(1.0, 0.42, 0.1) * ember;
 
     // worn arrises: the sharp folds catch light, with only a fine dark seam
     col = mix(col, col * 1.18 + 0.03, line * 0.5);
     col = mix(col, u_ink, line * 0.22);
     col = mix(col, u_fog, smoothstep(1.6, 4.5, distance(wp, u_eye)) * 0.45);
+    if (u_guide > 0.5) { outColor = vec4(vec3(0.95), 0.9); return; }     // the next piece to place: alpha 0.9 marks it
     outColor = vec4(col, 1.0);
   }`;
 
@@ -462,12 +590,14 @@
   uniform mat4 u_viewProj;
   uniform sampler2D u_state;
   out vec3 v_world, v_nrm, v_col;
-  out float v_plant;
+  out float v_plant, v_fresh;
   void main() {
     int id = int(a_part.x + 0.5);
     vec4 pv = texelFetch(u_state, ivec2(id, 0), 0);
     vec4 of = texelFetch(u_state, ivec2(id, 1), 0);
-    float sc = texelFetch(u_state, ivec2(id, 2), 0).x;
+    vec4 sf = texelFetch(u_state, ivec2(id, 2), 0);
+    float sc = sf.x;
+    v_fresh = sf.y;
     float c = cos(of.w), s = sin(of.w);
     vec3 l = a_local * sc;
     vec3 wp = pv.xyz + of.xyz + vec3(c * l.x + s * l.z, l.y, -s * l.x + c * l.z);
@@ -480,10 +610,11 @@
   const RUINM_FS = HEAD + RUIN.shaders.NOISE + SCENE + `
   uniform vec3 u_fog, u_eye;
   in vec3 v_world, v_nrm, v_col;
-  in float v_plant;
+  in float v_plant, v_fresh;
   out vec4 outColor;
   void main() {
     vec3 n = normalize(v_nrm), wp = v_world, col = v_col;
+    col = mix(col, vec3(0.86, 0.83, 0.76), v_fresh * 0.6);          // fresh from the palace, not yet weathered
     if (v_plant < 0.5) {
       // weathered stone: grain, pits, grime run down, lichen, damp at the foot
       col *= 0.86 + 0.2 * vnoise3(wp * 180.0) + 0.08 * (vnoise3(wp * 700.0) - 0.5);
@@ -575,7 +706,7 @@
   // so the shader can ink it.
   const KINDS = {
     post:  (r) => ({ top: r.float(0.55, 0.9), tp: 1.4, tip: 0.06, bend: r.float(-0.12, 0.12), bulge: 0.14, jit: 0.12, corner: r.float(0.18, 0.35), f: 18 }),
-    shard: (r) => ({ top: r.float(0.04, 0.18), tp: 1.1, tip: 0.25, bend: r.float(-0.2, 0.2), bulge: 0.12, jit: 0.14, corner: r.float(0.2, 0.4), f: 20 }),
+    shard: (r) => ({ top: r.float(0.04, 0.18), tp: 1.1, tip: 0.35, bend: r.float(-0.35, 0.35), bulge: 0.12, jit: 0.14, corner: r.float(0.2, 0.4), f: 20 }),
     slab:  (r) => ({ top: r.float(0.8, 0.95), tp: 1, tip: 0.02, bend: 0, bulge: 0.1, jit: 0.1, corner: r.float(0.25, 0.45), f: 16, sag: r.float(-0.25, 0.25) }),
     knot:  (r) => ({ top: r.float(0.45, 0.75), tp: 1.2, tip: 0.08, bend: r.float(-0.1, 0.1), bulge: 0.28, jit: 0.16, corner: r.float(0.3, 0.5), f: 24 }),
     beam:  (r) => ({ top: r.float(0.82, 0.97), tp: 1, tip: 0.03, bend: r.float(-0.06, 0.06), bulge: 0.09, jit: 0.07, corner: r.float(0.25, 0.45), f: 14 }),
@@ -704,6 +835,9 @@
       const gl = (this.gl = renderer.gl);
       this.progBG = renderer.program(FULL_VS, BG_FS);
       this.progVig = renderer.program(FULL_VS, VIGNETTE_FS);
+      this.progPost = renderer.program(FULL_VS, POST_FS);
+      this.progCopy = renderer.program(FULL_VS, COPY_FS);
+      this.touch = true;
       this.progDepth = renderer.program(PIECE_VS, DEPTH_FS);
       this.progBoard = renderer.program(BOARD_VS, BOARD_FS);
       this.progPiece = renderer.program(PIECE_VS, PIECE_FS);
@@ -839,6 +973,27 @@
       return true;
     }
 
+    /** the marks the daemon leaves on the ground (life.js draws them on a canvas) */
+    syncMarks(time) {
+      const gl = this.gl;
+      if (!this.marksTex) {
+        this.marksTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.marksTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        this.marksSeen = -1; this.marksAt = -1;
+      }
+      const L = this.life;
+      if (!L || L.version === this.marksSeen || Math.abs(time - this.marksAt) < 0.06) return;
+      this.marksSeen = L.version; this.marksAt = time;
+      gl.bindTexture(gl.TEXTURE_2D, this.marksTex);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, L.canvas);
+    }
+
     /** keep one mesh per living piece */
     syncMeshes() {
       const G = this.growth;
@@ -918,7 +1073,7 @@
     }
 
     updateCamera(dt, aspectView) {
-      const c = this.cam, k = 1 - Math.exp(-dt * 7);
+      const c = this.cam, k = 1 - Math.exp(-Math.max(0, dt) * 7);
       if (this.auto) {
         // cuts: every 8-15 s a hard cut to another preset; inside a shot the camera creeps
         this.shotLeft -= dt;
@@ -979,6 +1134,7 @@
         if (n >= MAXB) break;
         if (p.g < 0.03 || p.pos[1] + p.size[1] * p.g < 0.001) continue;   // sunk below the ground
         if (p.ruinOnly && (p.pos[1] > 0.002 || p.tint)) continue;          // the ruin roots only by its foot
+        if (p.guide) continue;
         const w = 0.35 + 0.65 * p.g;
         this.boxData[n * 4] = p.pos[0]; this.boxData[n * 4 + 1] = p.pos[1]; this.boxData[n * 4 + 2] = p.pos[2]; this.boxData[n * 4 + 3] = p.yaw;
         const r1 = MAXB * 4 + n * 4;
@@ -1020,7 +1176,7 @@
       gl.uniformMatrix4fv(ud.u_viewProj, false, this.lightVP);
       gl.uniform1f(ud.u_time, time);
       for (const p of pieces) {
-        if (p.g < 0.003) continue;
+        if (p.g < 0.003 || p.guide) continue;
         const m = this.meshes.get(p.id + ':' + p.seed);
         if (!m) continue;
         const e = p.g, w = 0.35 + 0.65 * e;
@@ -1036,7 +1192,8 @@
       }
       gl.disable(gl.POLYGON_OFFSET_FILL);
 
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      const touch = this.touch && this.postTargets(r.canvas.width, r.canvas.height);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, touch ? this.post.scene.fb : null);
       gl.viewport(0, 0, r.canvas.width, r.canvas.height);
       this.updateCamera(dt || 0.016, r.canvas.width / r.canvas.height);
       const ground = [0, 1, 2].map((k) => c.paper[k] * 0.78 + c.paperDeep[k] * 0.22);
@@ -1059,6 +1216,8 @@
       this.bindScene(P, time);
       gl.uniformMatrix4fv(u.u_viewProj, false, this.viewProj);
       gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, r.surface.tex); gl.uniform1i(u.u_surface, 5);
+      this.syncMarks(time);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.marksTex); gl.uniform1i(u.u_marks, 2);
       gl.uniform3fv(u.u_inkEdge, c.inkEdge);
       gl.uniform3fv(u.u_ink, c.ink);
       gl.uniform3fv(u.u_ground, ground);
@@ -1093,7 +1252,7 @@
         }
         // it rises out of the surface: thin at first, then filling out
         const e = p.g, w = 0.35 + 0.65 * e;
-        this.drawMesh(u, m, p.pos, [w, Math.max(0.001, e), w], p.yaw, { seed: p.seed % 1000 / 100, mode: p.ruinOnly ? 1 : 0, tint: p.tint || 0, g: p.ruinOnly ? 1 : e, shake: Math.max(shake * shake, p.shake || 0), self: p._box ?? -1 });
+        this.drawMesh(u, m, p.pos, [w, Math.max(0.001, e), w], p.yaw, { seed: p.seed % 1000 / 100, mode: p.ruinOnly ? 1 : 0, tint: p.tint || 0, burn: p.burn || 0, guide: p.guide, g: p.ruinOnly ? 1 : e, shake: Math.max(shake * shake, p.shake || 0), self: p._box ?? -1 });
       }
 
       // the ruin from its model
@@ -1157,11 +1316,74 @@
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.DST_COLOR, gl.ZERO);
       gl.bindVertexArray(this.emptyVAO);
-      gl.useProgram(this.progVig.p);
-      gl.uniform1f(this.progVig.u.u_harmony, harmony);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (!touch) {
+        gl.useProgram(this.progVig.p);
+        gl.uniform1f(this.progVig.u.u_harmony, harmony);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
       gl.disable(gl.BLEND);
+      if (touch) {
+        const T = this.post, [prev, next] = T.ping;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, next.fb);
+        gl.useProgram(this.progPost.p);
+        const u2 = this.progPost.u;
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, T.scene.tex); gl.uniform1i(u2.u_scene, 0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, prev.tex); gl.uniform1i(u2.u_prev, 1);
+        gl.uniform3fv(u2.u_ground, ground);
+        gl.uniform2f(u2.u_px, 1 / T.w, 1 / T.h);
+        gl.uniform1f(u2.u_cell, Math.max(1, Math.round(T.h / 720)));
+        gl.uniform1f(u2.u_time, time);
+        // bursts: now and then on its own, and when something happens to a being
+        const fdt = Math.max(0, dt || 0);
+        this.burst = (this.burst || 0) * Math.exp(-fdt * 3.5);
+        if (this.life && this.life.on && Math.random() < fdt * 0.18) this.burst = Math.max(this.burst, 0.5 + Math.random() * 0.5);
+        if (this.life && this.life.flash) { this.burst = Math.max(this.burst, this.life.flash); this.life.flash = 0; }
+        gl.uniform1f(u2.u_burst, this.burst);
+        const G = this.growth && this.growth.game;
+        this.tamt = (this.tamt || 0) + (((G && G.active) ? 1 : 0) - (this.tamt || 0)) * Math.min(1, fdt * 1.5);
+        gl.uniform3fv(u2.u_tcol, G ? G.colour : [0.86, 0.88, 0.9]);
+        gl.uniform1f(u2.u_tamt, this.tamt);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.useProgram(this.progCopy.p);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, next.tex); gl.uniform1i(this.progCopy.u.u_tex, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        T.ping = [next, prev];
+      }
       gl.bindVertexArray(null);
+    }
+
+    /** render targets for the TOUCH look: the scene, and two frames for the trails */
+    postTargets(w, h) {
+      const gl = this.gl;
+      if (this.post && this.post.w === w && this.post.h === h) return true;
+      if (this.post) {
+        for (const t of [this.post.scene, ...this.post.ping]) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fb); if (t.rb) gl.deleteRenderbuffer(t.rb); }
+      }
+      const make = (depth) => {
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        const fb = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+        let rb = null;
+        if (depth) {
+          rb = gl.createRenderbuffer();
+          gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+          gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+          gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+        }
+        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);     // empty: no light remembered yet
+        return { tex, fb, rb };
+      };
+      this.post = { w, h, scene: make(true), ping: [make(false), make(false)] };
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return true;
     }
 
     drawMesh(u, m, anchor, scale, yaw, o) {
@@ -1174,6 +1396,8 @@
       gl.uniform1f(u.u_g, o.g ?? 1);
       gl.uniform1f(u.u_shake, o.shake || 0);
       gl.uniform1f(u.u_tint, o.tint || 0);
+      if (u.u_burn) gl.uniform1f(u.u_burn, o.burn || 0);
+      if (u.u_guide) gl.uniform1f(u.u_guide, o.guide ? 1 : 0);
       gl.uniform1i(u.u_self, o.self ?? -1);
       gl.bindVertexArray(m.vao);
       gl.drawArrays(gl.TRIANGLES, 0, m.count);

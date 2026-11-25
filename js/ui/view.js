@@ -90,6 +90,7 @@
       window.addEventListener('keydown', (ev) => {
         if (ev.target instanceof HTMLInputElement || ev.ctrlKey || ev.metaKey || ev.altKey) return;
         if (ev.key === 't' || ev.key === 'T') { this.toggleTop(); this.ui.wake(); }
+        else if (ev.key === 'v' || ev.key === 'V') { this.scene.touch = !this.scene.touch; document.body.classList.toggle('is-touch', this.scene.touch); }
         else if (ev.key === 'c' || ev.key === 'C') { this.setAuto(!this.scene.auto); this.ui.wake(); }
         else if (SHOTS[ev.key]) { this.setAuto(false); this.scene.setShot(SHOTS[ev.key]); this.sync(); this.ui.wake(); }
       });

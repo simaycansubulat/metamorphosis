@@ -26,6 +26,7 @@ a build step, a server or any dependencies; it works offline. WebGL2 is required
 | F | fullscreen |
 | H | hide every mark; only the surface remains |
 | D | observer's notes: a live readout of the daemon's state, for the team |
+| V | switch between the TOUCH look (light points and lines in a dark space, with trails) and the painted look |
 | W (or "cams") | webcams: read a real construction built with Jenga blocks (see below) |
 
 Each session gets a 5-character code (top left, also written into the URL as
@@ -100,7 +101,64 @@ The side camera can't tell rows apart, so all built cells in one column get
 that column's height. Two webcams on one USB hub sometimes refuse to run
 together; use separate ports.
 
-## The beginning: the Künstliche Ruine
+## The beginning: the ruin's history in ten seconds
+
+Every session first tells where the ruin comes from (`ruinFromModel()`,
+`palace()`, `moveRuin()` and `caption()` in `js/daemon/growth.js`), with a few
+words under the scene:
+
+1. a short wall stands alone (the model's lowest stones)
+2. beside it the palace rises: pale dressed blocks, rows of windows, a tower
+3. 1774: the palace burns, blackens with soot and embers, and falls into a heap
+4. its stones are carried along the ground to the wall and lifted into place,
+   course by course: 1784, the ruin is built out of them (fresh pale stone)
+5. ivy, rain, two hundred years: plants grow over it, the stones weather
+6. in two seconds it falls, breaks, and becomes ground: where each stone broke,
+   its grit stays on the ground, then creeps to where the daemon's body rises
+
+## Trying to be human
+
+Once its body has grown, the daemon wants to know what it is like to be human.
+It cannot talk; it only has its stones, its weight and the ground
+(`js/daemon/life.js`). Each cluster of stones becomes a being that tries what
+makes us human:
+
+- **vulnerability:** it stacks its stones into an upright body, wobbles, falls,
+  lies there trembling, and slowly gets up. A fast movement near it makes it
+  flinch and shrink back.
+- **attachment:** beings that meet stay bonded, return to each other and breathe
+  together; apart too long, one searches. One being attaches to the human: it
+  follows the cursor over the ground, and when the human stops it waits there
+  and leaves a ring that never fades.
+- **imperfection:** it stumbles (smeared footprints), hesitates, follows the
+  human a little wrong, answers tapped rhythms with hops but sometimes misses
+  one, lifts its brush mid-stroke, and loses the beat while dancing.
+- **mortality:** it tires and sleeps, sinking a little into the ground; its
+  traces fade.
+- and it plays: it walks, paints, dances; at rest its stones beat like a heart.
+
+## The game: one human thing, built together
+
+After its history the ruin becomes ground. Then, in the future, it tries to
+understand one human thing per game (`js/daemon/game.js`). It cannot talk; it
+shows the players a form to build together with real blocks (15 x 5 x 3 cm,
+like Jenga) on the table in front of the screen. The next block glows where it
+goes; the players place a real block there and tap the screen (or press Enter
+or →). ← / Backspace takes one back. The dots show whose turn it is. When the
+form is complete, it comes alive in its own way.
+
+| game | colour | the form | what it asks of the players | when complete |
+|---|---|---|---|---|
+| attachment | purple | a six-sided ring tower; every block bridges two blocks below, laid by others | each player's pieces hold the others', like a puzzle | a wave runs round the ring |
+| vulnerability | light blue | a tall, thin stack of cantilevers, each block balanced on the end of the last | to be gentle; it may fall | it trembles and sways |
+| intimacy | red | a tight bundle of standing blocks pressed together on a tiny footprint | to come close, hands and bodies | it breathes with one heartbeat |
+| curiosity | matrix green | a path branching out over the table, a block standing at each tip | to go out in new directions | a pulse runs out to the tips, which look around |
+| imperfection | yellow | a wall built wrong on purpose: offsets, gaps, a block standing where it should lie | to place blocks badly, on purpose | blocks jump out of place and back |
+
+Each new session plays the next game. `?game=intimacy` (etc.) fixes one, G
+switches, `?players=4` or + / − sets the number of players.
+
+## The ruin model
 
 Every session opens with the ruin from its 3D model,
 `assets/kuenstliche_ruine_weimar_game_ready.glb` (910 parts: wall stones,

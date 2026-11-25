@@ -7,7 +7,7 @@
   <meta name="description" content="An artificial daemon attempting to communicate through an evolving abstract language of stains.">
   <link rel="stylesheet" href="css/daemon.css">
 </head>
-<body class="is-dormant">
+<body class="is-dormant is-touch">
 
   <!-- The daemon's surface. Everything it says happens here. -->
   <canvas id="surface" aria-label="The daemon's evolving visual language"></canvas>
@@ -37,6 +37,16 @@
   </div>
 
 
+  <!-- The game: which human thing it explores, whose turn, how far. -->
+  <div class="hud" id="hud" aria-live="polite">
+    <span class="hud-name" id="hud-name"></span>
+    <span class="hud-turn" id="hud-turn"></span>
+    <span class="hud-count" id="hud-count"></span>
+  </div>
+
+  <!-- The ruin's history, told in a few words while it plays. -->
+  <p class="story" id="story" aria-live="polite"></p>
+
   <!-- Observer's notes (press D): a reading of the daemon's state, for the team. -->
   <pre class="notes" id="notes" hidden></pre>
 
@@ -57,6 +67,8 @@
   <script src="js/daemon/daemon.js"></script>
   <script src="js/daemon/ruin-model.js"></script>
   <script src="js/daemon/growth.js"></script>
+  <script src="js/daemon/life.js"></script>
+  <script src="js/daemon/game.js"></script>
   <script src="js/render/shaders.js"></script>
   <script src="js/render/scene.js"></script>
   <script src="js/render/renderer.js"></script>

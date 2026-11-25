@@ -24,6 +24,11 @@
   'use strict';
 
   const LEVEL = 0.065;              // one level of the will, in world height
+  // the ruin's history, in seconds from the start of a session
+  const HISTORY = { stub: 0.075, palace: 2.5, burn: 5.2, carry: 8.8, age: 16, fall: 20, rise: 22.6 };
+  // the history is told at double speed: its 20 s pass in 10; the fall keeps real time (2 s)
+  const FAST = 2, SHIFT = HISTORY.fall - HISTORY.fall / FAST;
+  const storyTime = (t) => (t * FAST < HISTORY.fall ? t * FAST : t + SHIFT);
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   const smooth = (t) => t * t * (3 - 2 * t);
 
@@ -40,7 +45,7 @@
       this.liveSeed = 1;
       daemon.on('session:start', ({ seed }) => (this.live ? this.restartLive() : this.generate(seed)));
       daemon.on('session:end', () => { for (const p of this.pieces) if (!p.leaving) { p.leaving = true; p.leaveAt = this.t + Math.random() * 4; p.leaveDur = 4 + Math.random() * 3; } });
-      daemon.on('dormant', () => { this.pieces = []; this.dust = null; this.ivy = null; this.ruinM = null; this.version++; });
+      daemon.on('dormant', () => { this.pieces = []; this.dust = null; this.ivy = null; this.ruinM = null; this.story = false; this.lifeAt = null; this.version++; });
     }
 
     /* ---- the plan ----------------------------------------------------------------- */
@@ -50,6 +55,15 @@
     generate(seed) {
       const W = RUIN.will, A = this.A, will = this.daemon.will;
       const rng = new RUIN.Random((seed ^ 0xb10c5) >>> 0);
+      if (this.game) {
+        // a game: after its history the ruin becomes ground, and the players build (game.js)
+        const pieces = [];
+        this.story = false; this.lifeAt = null;
+        this.ruin(pieces, rng);
+        if (this.lifeAt == null) this.lifeAt = 1;
+        this.pieces = pieces; this.t = 0; this.reportT = 0; this.version++;
+        return;
+      }
       const T = will.T;
       const cell = (i, j) => { const w = W.cellToWorld(i, j, A); return [w.x - A / 2, w.y - 0.5]; };
       const key = (i, j) => j * W.COLS + i;
@@ -58,12 +72,13 @@
 
       const L = rng.float(0.15, 0.17), B = L / 3, Th = L * 0.2;   // this session's piece
       const v = () => rng.float(0.82, 1.18);                      // no two alike: cut stone, not factory blocks
+      let grp = 0;                                                // which being a piece belongs to
 
       const add = (o) => {
         const p = {
           id: id++, kind: o.kind || 'beam', size: o.size, pos: o.pos, yaw: o.yaw + rng.float(-0.07, 0.07),
           start: o.start, dur: o.dur ?? 2.2 + o.size[1] * 9 + rng.float(0, 1.2),
-          stray: !!o.stray, seed: rng.int(1, 1e9), g: 0, boost: 0, grown: false,
+          stray: !!o.stray, seed: rng.int(1, 1e9), g: 0, boost: 0, grown: false, grp: o.stray ? -1 : grp,
         };
         if (o.stray) { p.leaveAt = p.start + p.dur + rng.float(30, 60); p.leaveDur = rng.float(6, 10); }
         pieces.push(p);
@@ -94,29 +109,15 @@
       const edge = (x, z, y, yaw, t, sh) => { const [l, m, n] = dims(sh); return add({ size: [l, m, n], pos: [x, y, z], yaw, start: t }); };
       const top = (p) => p.pos[1] + p.size[1];
 
-      // As in the workshop's Jenga models: mostly STANDING pieces. Gates (two
-      // posts and a lintel), posts stacked end on end, T's whose beam
-      // cantilevers out, storeys of gates on gates, a lone post as a crown.
-      const s = L * 0.38;                                         // half span of a gate
-      const turn = () => (rng.chance(0.5) ? 0 : Math.PI / 2) + rng.float(-0.12, 0.12);
-      // 15-25 pieces in all (strays included): a few clear structures, not a crowd
-      const budget = rng.int(15, 25) - 2;
+      // ABSTRACT: no gates, lintels, stacks or towers, nothing that reads as
+      // building. Each place the daemon wants matter grows a cluster of fused,
+      // leaning, tapering masses (shards, swollen knots, blades) whose height
+      // follows the intention, so the intention is felt, not readable.
+      const budget = rng.int(16, 26) - 2;
       const full = () => pieces.length >= budget;
       const formStarts = [];
-
-      /** two posts and a lintel across them; the lintel may slide off-centre */
-      const gate = (x, z, y, a, t, slide = 0) => {
-        const [ax, az] = at(x, z, a, -s, 0), [bx, bz] = at(x, z, a, s, 0);
-        const p1 = post(ax, az, y, a + turn(), t), p2 = post(bx, bz, y, a + turn(), t + rng.float(0.2, 0.7));
-        const [lx, lz] = at(x, z, a, slide, 0);
-        return beam(lx, lz, Math.min(top(p1), top(p2)), a + rng.float(-0.06, 0.06), Math.max(after(p1), after(p2)), rng.pick(SPAN));
-      };
-      /** a post with a beam balanced on it, cantilevering to one side */
-      const tee = (x, z, y, a, t) => {
-        const p = post(x, z, y, a + turn(), t);
-        const [bx, bz] = at(x, z, a, rng.pick([-1, 1]) * rng.float(0, 0.28) * L, 0);
-        return beam(bx, bz, top(p), a + rng.float(-0.1, 0.1), after(p), rng.pick(SPAN));
-      };
+      const grow = (kind, x, z, y, w, h, d, yaw, t) => add({ kind, size: [w, h, d], pos: [x, y, z], yaw, start: t });
+      const near = (x, z, r) => { const a = rng.float(0, Math.PI * 2), rr = r * rng.float(0.45, 1); return [x + Math.cos(a) * rr, z + Math.sin(a) * rr]; };
 
       const cells = [];
       for (let j = 0; j < W.ROWS; j++) for (let i = 0; i < W.COLS; i++) if (T[key(i, j)] > 0.5) cells.push({ i, j, h: T[key(i, j)], r: rng.next() });
@@ -129,62 +130,64 @@
         used.add(key(c.i, c.j));
         const [cx, cz] = cell(c.i, c.j);
         const x = jit(cx, 0.03), z = jit(cz, 0.03);
-        const yaw = rng.float(0, Math.PI);
+        const yaw = rng.float(0, Math.PI * 2);
         const t0 = clock + rng.float(0, 0.6);
         clock += rng.float(0.8, 1.6);
         forms++;
+        grp++;
         formStarts.push(pieces.length);
+        const H = c.h * LEVEL * rng.float(0.85, 1.12);
 
-        if (c.h >= 4) {
-          // a totem: storeys of gates and T's, crowned by a lone post
-          const storeys = c.h >= 4.6 ? 3 : 2;
-          let y = 0, t = t0, a = yaw, b;
-          for (let k = 0; k < storeys; k++) {
-            if (k === 0 || rng.chance(0.55)) b = gate(x, z, y, a, t, rng.chance(0.4) ? rng.float(-0.22, 0.22) * L : 0);
-            else { b = tee(x, z, y, a + Math.PI / 2, t); a += Math.PI / 2; }
-            y = top(b); t = after(b);
+        if (c.h >= 3.5) {
+          // a rising cluster: one dominant shard, smaller ones leaning out of its foot
+          const w = rng.float(0.045, 0.072);
+          const main = grow(rng.pick(['shard', 'shard', 'post']), x, z, 0, w, H, w * rng.float(0.55, 0.95), yaw, t0);
+          const n = rng.int(2, 4);
+          for (let k = 0; k < n; k++) {
+            const [sx, sz] = near(x, z, w * 0.9), sw = w * rng.float(0.45, 0.8);
+            grow(rng.pick(['shard', 'knot', 'shard']), sx, sz, 0, sw, H * rng.float(0.2, 0.6), sw * rng.float(0.6, 1), rng.float(0, Math.PI * 2), t0 + rng.float(0.4, 1.6));
           }
-          if (rng.chance(0.75)) post(jit(x, 0.01), jit(z, 0.01), y, a + turn(), t);
-        } else if (c.h >= 2.5) {
-          const v = rng.pick(['gate', 'stack', 'tee', 'twin', 'gate', 'stack']);
-          if (v === 'gate') {
-            const b = gate(x, z, 0, yaw, t0, rng.chance(0.5) ? rng.float(-0.25, 0.25) * L : 0);
-            if (rng.chance(0.6)) post(jit(x, 0.01), jit(z, 0.01), top(b), yaw + turn(), after(b));
-            else if (rng.chance(0.5)) edge(x, z, top(b), yaw + Math.PI / 2, after(b));
-          } else if (v === 'stack') {
-            // posts end on end, a little out of line, then a beam
-            const p1 = post(x, z, 0, yaw, t0);
-            const p2 = post(jit(x, 0.012), jit(z, 0.012), top(p1), yaw + rng.float(-0.5, 0.5), after(p1));
-            if (rng.chance(0.7)) { const [bx, bz] = at(x, z, yaw, rng.float(-0.25, 0.25) * L, 0); beam(bx, bz, top(p2), yaw, after(p2)); }
-          } else if (v === 'tee') {
-            const b = tee(x, z, 0, yaw, t0);
-            if (rng.chance(0.5)) { const [ex, ez] = at(x, z, yaw, rng.pick([-1, 1]) * L * 0.36, 0); post(ex, ez, top(b), yaw + turn(), after(b)); }
+          // sometimes a swelling lodged in its flank
+          if (rng.chance(0.4)) { const kw = w * rng.float(0.7, 1.1); grow('knot', jit(x, w * 0.35), jit(z, w * 0.35), H * rng.float(0.3, 0.6), kw, kw * rng.float(0.6, 1), kw, rng.float(0, 6.3), after(main) - 0.4); }
+        } else if (c.h >= 2) {
+          const v = rng.pick(['lean', 'swell', 'blade']);
+          if (v === 'lean') {
+            // two shards rising from nearby, leaning apart
+            for (let k = 0; k < 2; k++) { const [sx, sz] = near(x, z, 0.03), sw = rng.float(0.035, 0.055); grow('shard', sx, sz, 0, sw, H * rng.float(0.7, 1.05), sw * rng.float(0.6, 0.9), rng.float(0, Math.PI * 2), t0 + k * rng.float(0.3, 0.9)); }
+          } else if (v === 'swell') {
+            // a swollen mass with a point breaking out of it
+            const w = rng.float(0.07, 0.1);
+            grow('knot', x, z, 0, w, H * rng.float(0.5, 0.7), w * rng.float(0.7, 1), yaw, t0);
+            const [sx, sz] = near(x, z, w * 0.25);
+            grow('shard', sx, sz, 0, w * 0.45, H * rng.float(0.9, 1.1), w * 0.35, rng.float(0, Math.PI * 2), t0 + rng.float(0.8, 1.4));
           } else {
-            // two posts close together, an edge block standing across them
-            const [ax, az] = at(x, z, yaw, -B * 1.2, 0), [bx, bz] = at(x, z, yaw, B * 1.2, 0);
-            const p1 = post(ax, az, 0, yaw, t0), p2 = post(bx, bz, 0, yaw + 0.15, t0 + 0.8);
-            edge(x, z, Math.min(top(p1), top(p2)), yaw, Math.max(after(p1), after(p2)), rng.pick(SPAN));
+            // a thin bowed blade with a pebble at its foot
+            const w = rng.float(0.08, 0.12);
+            grow('slab', x, z, 0, w, H, w * rng.float(0.18, 0.28), yaw, t0);
+            const [sx, sz] = near(x, z, w * 0.6), kw = rng.float(0.025, 0.04);
+            grow('knot', sx, sz, 0, kw, kw * rng.float(0.6, 0.9), kw, rng.float(0, 6.3), t0 + rng.float(0.5, 1.2));
           }
         } else {
-          // low: single standing pieces, a post on a lying block, an edge block
-          const v = rng.pick(['post', 'postOnBeam', 'edge', 'post', 'pair']);
-          if (v === 'post') post(x, z, 0, yaw, t0);
-          else if (v === 'postOnBeam') { const b = beam(x, z, 0, yaw, t0); post(jit(x, 0.01), jit(z, 0.01), top(b), yaw + turn(), after(b)); }
-          else if (v === 'edge') edge(x, z, 0, yaw, t0);
-          else { const [ax, az] = at(x, z, yaw, -B * 1.4, 0), [bx, bz] = at(x, z, yaw, B * 1.4, 0); post(ax, az, 0, yaw, t0); post(bx, bz, 0, yaw + 0.3, t0 + 0.6); }
+          // low: a scatter of knots and stubs
+          const n = rng.int(1, 3);
+          for (let k = 0; k < n; k++) {
+            const [sx, sz] = k ? near(x, z, 0.04) : [x, z], kw = rng.float(0.03, 0.055);
+            grow(rng.pick(['knot', 'knot', 'shard']), sx, sz, 0, kw, Math.max(kw * 0.6, H * rng.float(0.6, 1.1)), kw * rng.float(0.7, 1), rng.float(0, Math.PI * 2), t0 + k * rng.float(0.3, 0.8));
+          }
         }
       }
 
-      // too many: the last (least wanted) structures are left out whole
+      // too many: the last (least wanted) clusters are left out whole
       while (pieces.length > budget && formStarts.length > 1) pieces.length = formStarts.pop();
 
-      // never too sparse: single posts standing beside what grows
+      // never too sparse: small knots and stubs beside what grows
       const grounded = pieces.filter((p) => p.pos[1] === 0);
       while ((forms < 9 || pieces.length < 13) && grounded.length && !full()) {
         const host = rng.pick(grounded);
-        const a = rng.float(0, Math.PI * 2), r = rng.float(0.14, 0.2);
-        const hx = host.pos[0] + Math.cos(a) * r, hz = host.pos[2] + Math.sin(a) * r, ht = rng.float(1, Math.max(2, clock));
-        if (rng.chance(0.7)) post(hx, hz, 0, rng.float(0, Math.PI), ht); else edge(hx, hz, 0, rng.float(0, Math.PI), ht);
+        const [hx, hz] = near(host.pos[0], host.pos[2], rng.float(0.12, 0.2));
+        const kw = rng.float(0.025, 0.045), ht = rng.float(1, Math.max(2, clock));
+        grp++;
+        grow(rng.chance(0.6) ? 'knot' : 'shard', hx, hz, 0, kw, kw * rng.float(0.6, 1.8), kw * rng.float(0.7, 1), rng.float(0, Math.PI * 2), ht);
         forms++;
       }
 
@@ -194,12 +197,14 @@
       const ns = Math.min(empty.length, pieces.length < 14 ? 2 : rng.int(1, 2));
       for (let k = 0; k < ns; k++) {
         const e = empty.splice(rng.int(0, empty.length - 1), 1)[0];
-        const [ex, ez] = cell(e.i, e.j);
-        const standing = rng.chance(0.75), [l2, m2, n2] = dims();
-        add({ size: standing ? [m2, l2, n2] : [l2, n2, m2], pos: [jit(ex, 0.03), 0, jit(ez, 0.03)], yaw: rng.float(0, Math.PI), start: rng.float(3, 12), stray: true });
+        const [ex, ez] = cell(e.i, e.j), kw = rng.float(0.03, 0.05);
+        add({ kind: rng.pick(['shard', 'knot']), size: [kw, rng.float(0.04, 0.12), kw * rng.float(0.6, 1)], pos: [jit(ex, 0.03), 0, jit(ez, 0.03)], yaw: rng.float(0, Math.PI * 2), start: rng.float(3, 12), stray: true });
       }
 
+      this.story = false;
+      this.lifeAt = null;
       this.ruin(pieces, rng);
+      if (this.lifeAt == null) this.lifeAt = Math.max(0, ...pieces.filter((p) => !p.stray && !p.ruinOnly).map((p) => p.start + p.dur)) + 1;
       this.pieces = pieces;
       this.t = 0;
       this.reportT = 0;
@@ -453,12 +458,21 @@
     }
 
     /** The ruin from its 3D model (js/daemon/ruin-model.js, after
-     *  assets/kuenstliche_ruine_weimar_game_ready.glb): every part of it (stones,
-     *  frames, the ball, ivy leaves, grass) is drawn as it is in the model and can
-     *  fall on its own (this.ruinM, drawn by scene.js in one pass). */
+     *  assets/kuenstliche_ruine_weimar_game_ready.glb), told through its history
+     *  in about ten seconds (the times below are story time, told at double speed):
+     *    0 s   a short wall stands alone (the model's lowest stones)
+     *    2.5 s beside it the palace rises (pale dressed blocks, a tower)
+     *    5 s   the palace burns (1774), blackens and falls into a heap
+     *    9 s   its stones are carried over, one by one, and built onto the wall:
+     *          the ruin grows course by course out of the palace's stones (1784)
+     *   16 s   time: ivy and grass grow over it, the fresh stones weather
+     *   20 s   in two seconds it falls, breaks, and becomes ground
+     *   22 s   the ground creeps together and the daemon's own body rises out of it
+     *  The will never reads any of this. */
     ruinFromModel(pieces, rng) {
-      const M = RUIN.ruinModel, HOLD = 10, G = 3.2;
-      const yaw0 = rng.float(-0.12, 0.12), cz = rng.float(-0.03, 0.03), cs = Math.cos(yaw0), sn = Math.sin(yaw0);
+      const M = RUIN.ruinModel, G = 4.5;
+      const T = HISTORY;
+      const yaw0 = rng.float(-0.08, 0.08), cz = rng.float(0.02, 0.06), cs = Math.cos(yaw0), sn = Math.sin(yaw0);
       const s = 0.9 / M.length, [xc, yc] = M.center, fs = M.frontSign;
       const parts = M.parts.map((pt) => {
         const P = pt.p, n = P.length / 3, W = new Float32Array(P.length);
@@ -473,26 +487,48 @@
         const pivot = [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2];
         return { verts: W, idx: M.patterns[pt.i], col: pt.c, plant: pt.k, pivot, minY: Math.max(0, mn[1]), u: uSum / n, ext: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]] };
       });
-      // the collapse: from the west the parts fall, no trembling; each breaks where it lands
+
+      // the palace, behind the wall; its heap is where the ruin's stones come from
+      const heap = this.palace(pieces, rng);
+
+      // who is what: the old short wall, the stones carried from the palace, the plants
+      const upper = [];
+      for (const p of parts) {
+        // green, thin parts are plants even when the model does not say so
+        const green = p.col && p.col[1] > p.col[0] * 1.04 && p.col[1] > p.col[2] * 1.1;
+        if (!p.plant && green && Math.min(p.ext[0], p.ext[2]) < 0.012) p.grass = true;
+        if (p.plant || p.grass) p.grow = T.age + rng.float(0, 2.6) + (p.pivot[1] > 0.04 ? 0.6 : 0);
+        else if (p.pivot[1] < T.stub && p.ext[1] < T.stub * 1.4) p.stub = true;
+        else upper.push(p);
+      }
+      upper.sort((a, b) => a.minY - b.minY || a.u - b.u);
+      upper.forEach((p, k) => {
+        p.go = T.carry + (k / upper.length) * (T.age - T.carry - 2.2) + rng.float(0, 0.3);
+        p.from = [rng.float(heap.x0, heap.x1), rng.float(heap.z0, heap.z1)];
+        p.travel = rng.float(0.9, 1.3);
+      });
+      // the fall: two seconds, from the west, no trembling; each part breaks where it lands
       const U0 = -0.45;
       for (const p of parts) {
-        p.fallAt = HOLD + (p.u - U0) * 1.1 + rng.float(0, 0.25) - p.pivot[1] * 0.6;
+        p.fallAt = T.fall + (p.u - U0) / 0.9 * 0.9 + rng.float(0, 0.3);
         p.hit = p.fallAt + Math.sqrt((2 * Math.max(p.minY, 0.0005)) / G);
-        p.vx = rng.float(-0.05, 0.05) + sn * rng.float(-0.1, 0.1);
-        p.vz = rng.float(-0.05, 0.05) + cs * rng.float(-0.1, 0.1);
+        p.vx = rng.float(-0.05, 0.05) + sn * rng.float(-0.12, 0.12);
+        p.vz = rng.float(-0.05, 0.05) + cs * rng.float(-0.12, 0.12);
         p.spin = rng.float(-1.5, 1.5) * (p.plant ? 2 : 1);
       }
       this.ruinM = { parts, G, state: new Float32Array(parts.length * 4 * 3), version: (this.ruinM?.version || 0) + 1 };
       parts.forEach((p, i) => this.ruinM.state.set([p.pivot[0], p.pivot[1], p.pivot[2], p.plant], i * 4));
       this.ivy = null;
+      this.story = true;
 
-      // the new form: compressed in time, rising out of the dust once it has crept there
-      const body = pieces.filter((p) => !p.stray);
-      const t0 = Math.min(...body.map((p) => p.start)), from = HOLD + 3.6;
+      // the new form: compressed in time, rising out of the ground once it has crept there
+      const body = pieces.filter((p) => !p.stray && !p.ruinOnly);
+      const t0 = Math.min(...body.map((p) => p.start)), from = T.rise - SHIFT;
       for (const p of body) { p.start = from + (p.start - t0) * 0.3; p.dur = Math.min(p.dur, 2) * rng.float(0.8, 1.1); }
       const formEnd = Math.max(from, ...body.map((p) => p.start + p.dur));
       for (const p of pieces) if (p.stray) p.start += formEnd + 2;
       for (const p of pieces) if (p.leaveAt != null) p.leaveAt = p.start + p.dur + rng.float(30, 60);
+      this.lifeAt = formEnd + 1;
 
       // dust: where each stone breaks it lies on the ground as a little heap of grit,
       // then the grit creeps along the ground to a new stone
@@ -503,13 +539,13 @@
       for (const st of parts) {
         if (st.plant) continue;
         const v = st.ext[0] * st.ext[1] * st.ext[2];
-        const n = Math.max(10, Math.min(60, Math.round(v / 0.8e-6)));
+        const n = Math.max(6, Math.min(40, Math.round(v / 1.2e-6)));
         const hx = st.pivot[0] + st.vx * (st.hit - st.fallAt), hz = st.pivot[2] + st.vz * (st.hit - st.fallAt);
-        const R = Math.max(st.ext[0], st.ext[2]) * 0.7, heap = Math.min(0.014, 0.003 + st.ext[1] * 0.25);
+        const R = Math.max(st.ext[0], st.ext[2]) * 0.7, hp = Math.min(0.012, 0.003 + st.ext[1] * 0.2);
         for (let k = 0; k < n; k++) {
           const rr = Math.sqrt(rng.next()) * R, aa = rng.float(0, Math.PI * 2);
-          const p0 = [hx + Math.cos(aa) * rr, 0.0015 + heap * (1 - rr / R) * rng.next(), hz + Math.sin(aa) * rr];
-          const a = rng.float(0, Math.PI * 2), sp = rng.float(0.01, 0.06) * (0.4 + st.minY * 3);
+          const p0 = [hx + Math.cos(aa) * rr, 0.0015 + hp * (1 - rr / R) * rng.next(), hz + Math.sin(aa) * rr];
+          const a = rng.float(0, Math.PI * 2), sp = rng.float(0.01, 0.05) * (0.4 + st.minY * 3);
           const q = body.length ? pickBody() : null;
           let target = p0, arrive = from + 2;
           if (q) {
@@ -518,29 +554,109 @@
             target = [q.pos[0] + qc * tu + qs * tw, 0.0015, q.pos[2] - qs * tu + qc * tw];
             arrive = q.start + rng.float(-0.2, 0.5);
           }
-          const haze = rng.chance(0.08);
-          dust.push({ p0, v0: [Math.cos(a) * sp, haze ? rng.float(0.01, 0.05) : 0, Math.sin(a) * sp], emit: st.hit + rng.float(0, 0.06),
-            seek: Math.min(arrive - 1.2, from - 0.4 + rng.float(0, 0.8)), arrive, target,
-            size: haze ? rng.float(0.018, 0.035) : rng.float(0.003, 0.007), alpha: haze ? 0.22 : 0.95 });
+          dust.push({ p0, v0: [Math.cos(a) * sp, 0, Math.sin(a) * sp], emit: st.hit - SHIFT + rng.float(0, 0.06),
+            seek: Math.min(arrive - 1.2, from - 0.6 + rng.float(0, 0.6)), arrive, target,
+            size: rng.float(0.003, 0.007), alpha: 0.95 });
         }
       }
       this.dust = { n: 0, data: new Float32Array(dust.length * 5), parts: dust };
     }
 
-    /** the model ruin's parts: standing, falling, breaking where they land */
+    /** The palace (the Wilhelmsburg) behind the wall: a long block of pale dressed
+     *  stone with rows of windows and a tower at one end. It rises, burns, falls
+     *  into a heap, and the heap is slowly carried away. Returns the heap's extent. */
+    palace(pieces, rng) {
+      const T = HISTORY;
+      const X0 = -0.34, X1 = 0.34, Z = -0.3, D = 0.11, H = 0.2, TX = 0.22, TH = 0.32, CH = 0.02, BL = 0.042, TK = 0.026;
+      let k = 0;
+      const win = (u, y) => {
+        const row = [[0.045, 0.085], [0.11, 0.15], [0.165, 0.19]].some(([a, b]) => y > a && y < b);
+        const col = Math.abs((((u - X0) / 0.068) % 1) - 0.5) < 0.2;
+        return row && col;
+      };
+      const list = [];
+      const wall = (x0, z0, x1, z1, top, front) => {
+        const len = Math.hypot(x1 - x0, z1 - z0), yaw = -Math.atan2(z1 - z0, x1 - x0);
+        for (let y = 0, c = 0; y < top - 0.001; y += CH, c++) {
+          for (let d = (c % 2) * BL * 0.5 - BL * 0.5; d < len; d += BL) {
+            const a = Math.max(0, d), b = Math.min(len, d + BL);
+            if (b - a < 0.008) continue;
+            const m = (a + b) / 2, x = x0 + ((x1 - x0) * m) / len, z = z0 + ((z1 - z0) * m) / len;
+            if (front && x < TX && win(x, y + CH / 2)) continue;
+            if (y >= H && (x < TX - 0.005 || x > TX + 0.095)) continue;
+            const fall = T.burn + 2.2 + rng.float(0, 1.4) + (top - y) * 2.5 * rng.next();
+            const hit = fall + Math.sqrt((2 * Math.max(y, 0.0005)) / 3.2);
+            const p = { id: 6e5 + k++, kind: 'block', size: [b - a - 0.002, CH * 0.95, TK * rng.float(0.95, 1.05)], pos: [x, y, z], yaw: yaw + rng.float(-0.015, 0.015),
+              start: T.palace + (y / TH) * 2.2 + rng.float(0, 0.2), dur: 0.45, stray: false, seed: rng.int(1, 1e9), g: 0, boost: 0, grown: true,
+              ruinOnly: true, history: true, tint: 1, burn: 0 };
+            p.ruinT = { yaw0: p.yaw, y0: y, x0: x, z0: z, fallAt: fall, hit, G: 3.2, burnAt: T.burn + rng.float(0, 0.8) + (x - X0) * 1.6 + (TH - y) * 1.5,
+              gone: T.carry + rng.float(0, T.age - T.carry - 1.5), vx: rng.float(-0.06, 0.06), vz: rng.float(-0.04, 0.1), spin: rng.float(-2, 2) };
+            list.push(p);
+          }
+        }
+      };
+      const zf = Z + D / 2, zb = Z - D / 2;
+      wall(X0, zf, X1, zf, H, true);
+      wall(X0, zb, X1, zb, H, false);
+      wall(X0, zb + TK, X0, zf - TK, H, false);
+      wall(X1, zb + TK, X1, zf - TK, H, false);
+      // the tower rises above the roofline at the east end
+      wall(TX, zf + 0.001, TX + 0.09, zf + 0.001, TH, false);
+      wall(TX, zb - 0.001, TX + 0.09, zb - 0.001, TH, false);
+      wall(TX, zb + TK, TX, zf - TK, TH, false);
+      wall(TX + 0.09, zb + TK, TX + 0.09, zf - TK, TH, false);
+      pieces.push(...list);
+      return { x0: X0, x1: X1, z0: Z - D * 0.9, z1: Z + D * 0.9 };
+    }
+
+    /** words for the history, shown under the scene while it plays */
+    caption() {
+      if (!this.story || (this.game && this.game.active)) return '';
+      const t = storyTime(this.t), T = HISTORY;
+      if (t < T.palace) return 'a short wall';
+      if (t < T.burn) return 'beside it, the palace';
+      if (t < T.carry) return '1774 · the palace burns';
+      if (t < T.carry + 3.3) return 'its stones are carried to the wall';
+      if (t < T.age) return '1784 · a ruin is built out of them';
+      if (t < T.fall) return 'ivy, rain, two hundred years';
+      if (t < T.rise - 0.3) return 'it falls';
+      if (t < T.rise + 2.5) return 'and becomes ground';
+      return '';
+    }
+
+    /** the model ruin's parts through their history: the short wall, the stones
+     *  carried from the palace and built onto it, the plants, then the fall */
     moveRuin() {
-      const R = this.ruinM, t = this.t, st = R.state, n = R.parts.length;
+      const R = this.ruinM, t = storyTime(this.t), st = R.state, n = R.parts.length, T = HISTORY;
       let alive = 0;
       R.parts.forEach((p, i) => {
-        let ox = 0, oy = 0, oz = 0, sp = 0, sc = 1;
+        let ox = 0, oy = 0, oz = 0, sp = 0, sc = 1, fresh = 0;
+        if (p.plant || p.grass) sc = smooth(clamp((t - p.grow) / 1.4, 0, 1));
+        else if (!p.stub) {
+          if (t < p.go) sc = 0;
+          else {
+            // it appears on the heap, is carried along the ground, then lifted into its place
+            const e = clamp((t - p.go) / 0.3, 0, 1);
+            const m = smooth(clamp((t - p.go - 0.2) / p.travel, 0, 1));
+            const r = smooth(clamp((t - p.go - 0.2 - p.travel) / 0.55, 0, 1));
+            ox = (p.from[0] - p.pivot[0]) * (1 - m);
+            oz = (p.from[1] - p.pivot[2]) * (1 - m);
+            oy = (p.ext[1] / 2 - p.pivot[1]) * (1 - r);
+            sc = 0.3 + 0.7 * smooth(e);
+            fresh = 1 - smooth(clamp((t - T.age) / 3.5, 0, 1));
+          }
+        }
         if (t >= p.fallAt) {
           const f = Math.min(t, p.hit) - p.fallAt;
           ox = p.vx * f; oz = p.vz * f; oy = -0.5 * R.G * f * f; sp = p.spin * f;
-          if (t >= p.hit) sc = 1 - smooth(clamp((t - p.hit) / (p.plant ? 0.4 : 0.18), 0, 1));
+          if (t >= p.hit) {
+            if (!p.landed) { p.landed = true; if (!p.plant && this.onLand) this.onLand(p.pivot[0] + ox, p.pivot[2] + oz, Math.max(p.ext[0], p.ext[2])); }
+            sc *= 1 - smooth(clamp((t - p.hit) / (p.plant ? 0.3 : 0.4), 0, 1));
+          }
         }
-        if (sc > 0) alive++;
+        if (sc > 0 || t < T.fall) alive++;
         st[(n + i) * 4] = ox; st[(n + i) * 4 + 1] = oy; st[(n + i) * 4 + 2] = oz; st[(n + i) * 4 + 3] = sp;
-        st[(2 * n + i) * 4] = sc;
+        st[(2 * n + i) * 4] = sc; st[(2 * n + i) * 4 + 1] = fresh;
       });
       if (!alive) this.ruinM = null;
     }
@@ -603,6 +719,7 @@
     /* ---- time ----------------------------------------------------------------------- */
     /** attention offered at a point on the board: nearby pieces grow faster */
     attend(x, z, amount) {
+      if (this.onAttend) this.onAttend(x, z, amount);
       for (const p of this.pieces) {
         const d = Math.hypot(p.pos[0] - x, p.pos[2] - z);
         p.boost += amount * 2.5 * Math.exp(-(d * d) / 0.02);
@@ -610,24 +727,26 @@
     }
 
     update(dt) {
-      if (!this.pieces.length || dt <= 0) return;
+      if (dt <= 0 || (!this.pieces.length && !this.ruinM && !this.dust && !(this.game && this.game.state !== 'off'))) return;
       this.t += dt;
       const d = this.daemon;
       for (let k = this.pieces.length - 1; k >= 0; k--) {
         const p = this.pieces[k];
-        const local = this.t + p.boost;
+        const local = (p.history ? storyTime(this.t) : this.t) + p.boost;
         let g = smooth(clamp((local - p.start) / p.dur, 0, 1));
         if (p.ruinT) {
-          // the ruin's stones: they stand; then each falls, breaks on the ground and is dust
-          const R = p.ruinT, t = this.t;
-          g = 1;
+          // the ruin's stones: they stand; then each falls, breaks on the ground and is dust.
+          // The palace's blocks burn first, fall, and lie in a heap until they are carried off.
+          const R = p.ruinT, t = p.history ? storyTime(this.t) : this.t;
+          if (!p.history) g = 1;
+          else p.burn = smooth(clamp((t - R.burnAt) / 1.6, 0, 1));
           if (t >= R.fallAt) {
             const f = Math.min(t, R.hit) - R.fallAt;
             p.pos = [R.x0 + R.vx * f, Math.max(0, R.y0 - 0.5 * R.G * f * f), R.z0 + R.vz * f];
             p.yaw = R.yaw0 + R.spin * f;
             if (t >= R.hit) {
-              const b = clamp((t - R.hit) / 0.18, 0, 1);
-              g = 1 - smooth(b);
+              const b = p.history ? clamp((t - Math.max(R.hit, R.gone)) / 0.5, 0, 1) : clamp((t - R.hit) / 0.18, 0, 1);
+              g = Math.min(g, 1 - smooth(b));
               if (b >= 1) { this.pieces.splice(k, 1); this.version++; continue; }
             }
           }
